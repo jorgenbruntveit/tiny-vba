@@ -3805,6 +3805,22 @@ impl Binder<'_> {
                         kind: StatementKind::Foreign(self.imported(&import, arguments, site.span)?),
                     });
                 }
+                // `MsgBox "Done", vbInformation` and `DoEvents` called as
+                // statements discard their result. Other library functions
+                // called as statements remain unknown procedures for now.
+                if !self.symbols.contains_key(&name.key())
+                    && let Some(function) = vba_values::Intrinsic::from_name(&name.spelling)
+                    && matches!(
+                        function,
+                        vba_values::Intrinsic::MsgBox | vba_values::Intrinsic::DoEvents
+                    )
+                {
+                    let expression = self.intrinsic_call(function, arguments, site.span)?;
+                    return Ok(Statement {
+                        site,
+                        kind: StatementKind::Foreign(expression),
+                    });
+                }
                 let id = self.callee(name)?;
                 StatementKind::Call {
                     procedure: id,
