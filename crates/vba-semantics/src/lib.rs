@@ -295,6 +295,7 @@ fn kind(
     references
         .declared_kind(&ty.spelling)
         .map_err(|d| d.at(ty.span))?
+        .or_else(|| vba_library_enum(&ty.spelling))
         .ok_or_else(|| {
             Diagnostic::new(
                 "VBA0132",
@@ -302,6 +303,14 @@ fn kind(
             )
             .at(ty.span)
         })
+}
+/// VBA library enums are Long. Like intrinsic constants, they are fallbacks
+/// after referenced library types.
+fn vba_library_enum(name: &str) -> Option<ScalarKind> {
+    ["VbMsgBoxStyle", "VbMsgBoxResult"]
+        .iter()
+        .any(|enumeration| enumeration.eq_ignore_ascii_case(name))
+        .then_some(ScalarKind::Long)
 }
 fn nominal(
     ty: Option<&ast::Name>,
@@ -3999,6 +4008,35 @@ fn intrinsic_constant(name: &str) -> Option<Value> {
         "vbhiragana" => Some(Value::Integer(32)),
         "vbunicode" => Some(Value::Integer(64)),
         "vbfromunicode" => Some(Value::Integer(128)),
+        // VbMsgBoxStyle
+        "vbokonly" => Some(Value::Long(0)),
+        "vbokcancel" => Some(Value::Long(1)),
+        "vbabortretryignore" => Some(Value::Long(2)),
+        "vbyesnocancel" => Some(Value::Long(3)),
+        "vbyesno" => Some(Value::Long(4)),
+        "vbretrycancel" => Some(Value::Long(5)),
+        "vbcritical" => Some(Value::Long(16)),
+        "vbquestion" => Some(Value::Long(32)),
+        "vbexclamation" => Some(Value::Long(48)),
+        "vbinformation" => Some(Value::Long(64)),
+        "vbdefaultbutton1" => Some(Value::Long(0)),
+        "vbdefaultbutton2" => Some(Value::Long(256)),
+        "vbdefaultbutton3" => Some(Value::Long(512)),
+        "vbdefaultbutton4" => Some(Value::Long(768)),
+        "vbapplicationmodal" => Some(Value::Long(0)),
+        "vbsystemmodal" => Some(Value::Long(4096)),
+        "vbmsgboxhelpbutton" => Some(Value::Long(16384)),
+        "vbmsgboxsetforeground" => Some(Value::Long(65536)),
+        "vbmsgboxright" => Some(Value::Long(524288)),
+        "vbmsgboxrtlreading" => Some(Value::Long(1048576)),
+        // VbMsgBoxResult
+        "vbok" => Some(Value::Long(1)),
+        "vbcancel" => Some(Value::Long(2)),
+        "vbabort" => Some(Value::Long(3)),
+        "vbretry" => Some(Value::Long(4)),
+        "vbignore" => Some(Value::Long(5)),
+        "vbyes" => Some(Value::Long(6)),
+        "vbno" => Some(Value::Long(7)),
         _ => None,
     }
 }
