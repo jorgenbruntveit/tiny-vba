@@ -568,3 +568,44 @@ fn name_map_entries_are_matched_by_name_not_directory_order() {
     assert_eq!(error.code, "VBA_PROJECT_CORRUPT");
     assert_eq!(error.message, "unpaired UTF-16 surrogate in metadata");
 }
+#[test]
+fn a_lone_flag_byte_may_end_a_chunk_that_already_produced_output() {
+    // [MS-OVBA] 2.4.1.1.7 asks for at least one token after each FlagByte, but
+    // the 2.4.1.3.4 pseudocode reads tokens only while chunk input remains and
+    // Excel for Mac writes, and opens, a FlagByte with no tokens at chunk end.
+    let chunk = |tokens: &[u8]| {
+        let mut chunk = (0xb000u16 | (tokens.len() as u16 - 1))
+            .to_le_bytes()
+            .to_vec();
+        chunk.extend(tokens);
+        chunk
+    };
+    let mut literals = vec![0];
+    literals.extend(b"abcdefgh");
+    // Seven literals, then a copy token (offset 1, length 4089): one full
+    // TokenSequence that fills a 4096-byte chunk.
+    let full = [0x80, b'a', b'b', b'c', b'd', b'e', b'f', b'g', 0xf6, 0x0f];
+    for flag in [0x00, 0xff] {
+        let mut final_chunk = vec![1];
+        final_chunk.extend(chunk(&[literals.as_slice(), &[flag]].concat()));
+        assert_eq!(decompress(&final_chunk, 8).unwrap(), b"abcdefgh");
+        // A nonfinal chunk may also end with one; the next chunk still decodes.
+        let mut encoded = vec![1];
+        encoded.extend(chunk(&[full.as_slice(), &[flag]].concat()));
+        encoded.extend(chunk(&[0, b'i']));
+        let mut expected = b"abcdef".to_vec();
+        expected.extend([b'g'; 4090]);
+        expected.push(b'i');
+        assert_eq!(decompress(&encoded, 4097).unwrap(), expected);
+    }
+    // A chunk holding only a FlagByte produces nothing and stays corrupt,
+    // whether it is first or follows a chunk that produced output.
+    let mut encoded = vec![1];
+    encoded.extend(chunk(&full));
+    encoded.extend(chunk(&[0]));
+    let error = decompress(&encoded, 8192).unwrap_err();
+    assert_eq!(error.code, "VBA_PROJECT_CORRUPT");
+    assert_eq!(error.message, "empty token sequence");
+    let error = decompress(&[1, 0, 0xb0, 0], 4096).unwrap_err();
+    assert_eq!(error.message, "empty token sequence");
+}

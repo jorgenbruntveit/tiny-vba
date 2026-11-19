@@ -22,7 +22,7 @@ project bytes in the embedding when byte-for-byte preservation matters.
 
 ## Supported format profile
 
-- MS-OVBA compressed directory/module containers: literal/raw chunks and bounded overlapping copy tokens.
+- MS-OVBA compressed directory/module containers: literal/raw chunks and bounded overlapping copy tokens. A chunk that has produced output may end with a FlagByte and no tokens, as Excel for Mac writes and the 2.4.1.3.4 decompression algorithm allows; a chunk with only a FlagByte is corrupt.
 - Project information, optional compatibility/constants records, all three reference forms and optional reference names/original-control metadata.
 - Module names/optional Unicode names, Unicode/MBCS stream names/descriptions, offsets, kinds, cookies, read-only/private flags and terminators.
 - PROJECT module declarations and protection metadata; optional PROJECTwm name maps are checked against the directory identities. [MS-OVBA] 2.3.3 specifies PROJECTMODULES order, but Excel for Mac writes PROJECT stream order and opens such files, so entries are matched by name: each module must appear exactly once and an entry's MBCS and UTF-16 names must agree. Document module entries carry the MS-OVBA `DocTlibVer` cookie in its specified `HEXINT32 = "&H" 8HEXDIG` form (e.g. `Sheet1/&H00000000`); other cookie forms refuse as corrupt.
@@ -68,7 +68,7 @@ caps input at 4 MiB and requested output at 8 MiB.
 | VBA_PROJECT_PROTECTED | Restricted project source extraction refused |
 | VBA_PROJECT_LIMIT | Input, output, count, depth or container work cap exceeded |
 
-`crates/vba-project/tests/import.rs` has 15 independently authored tests, shared unchanged between
+`crates/vba-project/tests/import.rs` has 16 independently authored tests, shared unchanged between
 native CI and WASI execution. No external workbook acceptance or Office observation is claimed.
 Format authority: [MS-OVBA](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-ovba/575462ba-bf67-4190-9fac-c275523c75fc)
 and [MS-CFB](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cfb/53989ce4-7b05-4f8d-829b-d08d6148375b).
