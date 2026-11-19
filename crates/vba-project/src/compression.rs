@@ -29,7 +29,13 @@ pub fn decompress(input: &[u8], limit: usize) -> Result<Vec<u8>> {
             while tokens.pos < chunk.len() {
                 let flags = tokens.u8()?;
                 if tokens.pos == chunk.len() {
-                    return Err(corrupt("empty token sequence"));
+                    // [MS-OVBA] 2.4.1.3.4 reads tokens only while chunk input
+                    // remains, and Excel writes a lone FlagByte at the end of a
+                    // chunk. A chunk that produced nothing is still rejected.
+                    if output.len() == start {
+                        return Err(corrupt("empty token sequence"));
+                    }
+                    break;
                 }
                 for bit in 0..8 {
                     if tokens.pos == chunk.len() {

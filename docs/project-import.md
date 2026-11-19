@@ -22,10 +22,10 @@ project bytes in the embedding when byte-for-byte preservation matters.
 
 ## Supported format profile
 
-- MS-OVBA compressed directory/module containers: literal/raw chunks and bounded overlapping copy tokens.
+- MS-OVBA compressed directory/module containers: literal/raw chunks and bounded overlapping copy tokens. A chunk that has produced output may end with a FlagByte and no tokens, as Excel for Mac writes and the 2.4.1.3.4 decompression algorithm allows; a chunk with only a FlagByte is corrupt.
 - Project information, optional compatibility/constants records, all three reference forms and optional reference names/original-control metadata.
 - Module names/optional Unicode names, Unicode/MBCS stream names/descriptions, offsets, kinds, cookies, read-only/private flags and terminators.
-- PROJECT module declarations and protection metadata; optional PROJECTwm name maps are checked against directory order and identities. Document module entries carry the MS-OVBA `DocTlibVer` cookie in its specified `HEXINT32 = "&H" 8HEXDIG` form (e.g. `Sheet1/&H00000000`); other cookie forms refuse as corrupt.
+- PROJECT module declarations and protection metadata; optional PROJECTwm name maps are checked against the directory identities. [MS-OVBA] 2.3.3 specifies PROJECTMODULES order, but Excel for Mac writes PROJECT stream order and opens such files, so entries are matched by name: each module must appear exactly once and an entry's MBCS and UTF-16 names must agree. Document module entries carry the MS-OVBA `DocTlibVer` cookie in its specified `HEXINT32 = "&H" 8HEXDIG` form (e.g. `Sheet1/&H00000000`); other cookie forms refuse as corrupt.
 - Code pages 1250–1258, 874, 932, 936, 949, 950, 10000 and 65001 via encoding_rs without replacement decoding. Metadata Unicode must be well-formed UTF-16 and agree with MBCS identities. Representative 1252/1251/932/UTF-8 source and UTF-8 Unicode names have executable evidence; the full encoding mapping space is not exhaustively tested.
 
 Unknown encodings/records, platforms outside 0–3, nonstandard project LCIDs, nonzero library
@@ -68,7 +68,7 @@ caps input at 4 MiB and requested output at 8 MiB.
 | VBA_PROJECT_PROTECTED | Restricted project source extraction refused |
 | VBA_PROJECT_LIMIT | Input, output, count, depth or container work cap exceeded |
 
-`crates/vba-project/tests/import.rs` has 14 independently authored tests, shared unchanged between
+`crates/vba-project/tests/import.rs` has 16 independently authored tests, shared unchanged between
 native CI and WASI execution. No external workbook acceptance or Office observation is claimed.
 Format authority: [MS-OVBA](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-ovba/575462ba-bf67-4190-9fac-c275523c75fc)
 and [MS-CFB](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cfb/53989ce4-7b05-4f8d-829b-d08d6148375b).
@@ -99,6 +99,11 @@ now available separately; see [native persistence](forms.md).
 `ModuleKind::UserForm` and `Module::form` retain designer identity, exact source,
 attributes and native resources independently. Embedded imports reconcile designer
 storage, VBFrame and admitted f/o/x resources before attachment.
+VBFrame headers admit `TypeInfoVer`, which Excel for Mac writes, as an inert integer
+property; native Export copies the line unchanged. Other unknown designer properties refuse.
+A stored form or container LogicalSize whose width or height is zero takes the
+corresponding DisplayedSize value ([MS-OFORMS] 2.5.44); a different logical size is
+a scrollable form and still refuses as unsupported.
 `forms::decode_export` consumes native `.frm` bytes, an explicit code page and
 caller-supplied `.frx` bytes. `forms::companion_name` returns a validated local
 basename; no codec performs filesystem access. Records, strings, counts and

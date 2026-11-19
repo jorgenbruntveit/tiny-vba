@@ -37,6 +37,11 @@ name-resolution decisions. Preserve project/local/implicit-Me/import precedence;
 do not make descriptors override a user declaration. Audit whether a local `VBA`
 identifier shadows qualification rather than blindly special-casing its spelling.
 
+A bare call statement to `MsgBox` or `DoEvents`, such as `MsgBox "Done", vbInformation`,
+`Call MsgBox(...)` or `DoEvents`, uses the same helper after the same precedence checks
+and discards the result. Other library functions called as statements remain unknown
+procedures (VBA0110) for now.
+
 The bound extended call records:
 
 ```text

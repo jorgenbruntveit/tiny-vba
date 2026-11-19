@@ -235,8 +235,16 @@ fn container(
             frame::dimension(header, "clientheight", 0)?,
         )
     };
-    if m & (1 << 11) != 0 && size(&mut b)? != (width, height) {
-        return Err(unsupported("scrollable logical UserForm size"));
+    if m & (1 << 11) != 0 {
+        // [MS-OFORMS] 2.5.44: a zero LogicalSize dimension takes the DisplayedSize value.
+        let (lw, lh) = size(&mut b)?;
+        let logical = (
+            if lw == 0 { width } else { lw },
+            if lh == 0 { height } else { lh },
+        );
+        if logical != (width, height) {
+            return Err(unsupported("scrollable logical UserForm size"));
+        }
     }
     if m & (1 << 12) != 0 && (i32_value(&mut b)?, i32_value(&mut b)?) != (0, 0) {
         return Err(unsupported("scrolled UserForm"));

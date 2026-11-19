@@ -914,3 +914,96 @@ fn native_frame_appearance_reconciles_and_refuses_invalid_values_before_attachme
         .is_err()
     );
 }
+
+#[test]
+fn designer_typeinfover_is_an_integer_property_kept_through_export() {
+    // Excel for Mac writes TypeInfoVer in a UserForm's VBFrame designer header.
+    let with = |line: &str| {
+        String::from_utf8(fixture::export())
+            .unwrap()
+            .replace(" ClientHeight", &format!(" {line}\r\n ClientHeight"))
+    };
+    let attach = |export: &str| {
+        forms::decode_export(
+            "NativeForm.frm",
+            export.as_bytes(),
+            1252,
+            &[Resource {
+                name: "NativeForm.frx".into(),
+                bytes: fixture::companion(),
+            }],
+            &Limits::default(),
+        )
+    };
+    let native = attach(&with("TypeInfoVer = 54")).unwrap();
+    assert_eq!(native.design, decode(&fixture::companion()).unwrap().design);
+    let out =
+        forms::encode_export(&native, &native.design, &native.source, &Limits::default()).unwrap();
+    let frm = String::from_utf8(out[0].bytes.clone()).unwrap();
+    assert!(frm.contains(" TypeInfoVer = 54\r\n"), "{frm}");
+    let reopened = forms::decode_export(
+        &out[0].name,
+        &out[0].bytes,
+        1252,
+        &out[1..],
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(reopened.design, native.design);
+
+    let error = attach(&with("TypeInfoVer = new")).unwrap_err();
+    assert_eq!(error.code, "VBA_PROJECT_CORRUPT");
+    let error = attach(&with("TypeInfoVer = 1\r\n TypeInfoVer = 2")).unwrap_err();
+    assert_eq!(error.code, "VBA_PROJECT_CORRUPT");
+    // Other unknown designer properties still refuse.
+    let error = attach(&with("TypeInfoRevision = 1")).unwrap_err();
+    assert_eq!(error.code, "VBA_PROJECT_UNSUPPORTED");
+}
+
+/// The fixture's FormControl with its stored LogicalSize replaced; DisplayedSize
+/// stays 10583 x 7056 HIMETRIC.
+fn logical_size_companion(width: u32, height: u32) -> Vec<u8> {
+    use std::io::{Cursor, Write};
+    let mut file = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    for (name, mut bytes) in fixture::streams() {
+        if name == "f" {
+            // Record header, PropMask, caption length, ID, DisplayedSize, LogicalSize.
+            assert_eq!(bytes[16..24], fixture::u32s(&[10583, 7056]));
+            assert_eq!(bytes[24..32], fixture::u32s(&[10583, 7056]));
+            bytes[24..32].copy_from_slice(&fixture::u32s(&[width, height]));
+        }
+        file.create_stream(format!("/{name}"))
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+    }
+    let bytes = file.into_inner().into_inner();
+    let mut out = (bytes.len() as u32).to_le_bytes().to_vec();
+    out.extend(bytes);
+    out
+}
+#[test]
+fn zero_logical_size_dimensions_take_the_displayed_size() {
+    let expected = decode(&fixture::companion()).unwrap().design;
+    assert_eq!(
+        decode(&logical_size_companion(10583, 7056)).unwrap().design,
+        expected
+    );
+    // [MS-OFORMS] 2.5.44: a zero LogicalSize width or height is the
+    // corresponding DisplayedSize value. Excel for Mac stores (0, 0).
+    for (width, height) in [(0, 0), (0, 7056), (10583, 0)] {
+        assert_eq!(
+            decode(&logical_size_companion(width, height))
+                .unwrap()
+                .design,
+            expected,
+            "{width} x {height}"
+        );
+    }
+    // A logical size that differs from the displayed size is a scrollable form.
+    for (width, height) in [(20000, 0), (0, 9000), (20000, 9000), (10583, 1)] {
+        let error = decode(&logical_size_companion(width, height)).unwrap_err();
+        assert_eq!(error.code, "VBA_PROJECT_UNSUPPORTED", "{width} x {height}");
+        assert_eq!(error.message, "scrollable logical UserForm size");
+    }
+}

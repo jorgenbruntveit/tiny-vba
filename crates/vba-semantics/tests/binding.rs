@@ -354,3 +354,74 @@ fn document_implicit_me_members_precede_host_globals() -> Result<(), Box<dyn Err
     );
     Ok(())
 }
+
+#[test]
+fn msgbox_and_doevents_bind_as_call_statements_after_project_declarations()
+-> Result<(), Box<dyn Error>> {
+    let p = bind(
+        &[parsed(
+            "Sub Main()\nMsgBox \"Done\", 64\nCall MsgBox(\"Again\")\nDoEvents\nEnd Sub",
+        )?],
+        "Main",
+    )?;
+    let proc = p.procedures.first().ok_or("Main")?;
+    let functions = proc
+        .body
+        .iter()
+        .map(|s| match &s.kind {
+            StatementKind::Foreign(Expr {
+                kind: ExprKind::Intrinsic { function, .. },
+                ..
+            }) => Some(*function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    use vba_values::Intrinsic;
+    assert_eq!(
+        functions,
+        [
+            Some(Intrinsic::MsgBox),
+            Some(Intrinsic::MsgBox),
+            Some(Intrinsic::DoEvents)
+        ]
+    );
+    // A project procedure of the same name is called instead.
+    let p = bind(
+        &[parsed(
+            "Sub Main()\nMsgBox \"Done\"\nEnd Sub\nSub MsgBox(ByVal text As String)\nEnd Sub",
+        )?],
+        "Main",
+    )?;
+    let main = p
+        .procedures
+        .iter()
+        .find(|p| p.signature.name == "Main")
+        .ok_or("Main")?;
+    assert!(matches!(
+        main.body.first().ok_or("call")?.kind,
+        StatementKind::Call { .. }
+    ));
+    // Other library functions and unknown names stay unknown procedures.
+    for statement in [
+        "Left \"abc\", 1",
+        "Now",
+        "Input$ 1, 2",
+        "InputBox \"Name?\"",
+        "Shell \"x\"",
+        "Undefined 1",
+    ] {
+        let error = bind(
+            &[parsed(&format!("Sub Main()\n{statement}\nEnd Sub"))?],
+            "Main",
+        )
+        .err()
+        .ok_or(statement)?;
+        assert_eq!(error.code, "VBA0110", "{statement}");
+    }
+    // Argument counts are checked as for the function form.
+    let error = bind(&[parsed("Sub Main()\nMsgBox\nEnd Sub")?], "Main")
+        .err()
+        .ok_or("MsgBox without a prompt")?;
+    assert_eq!(error.message, "intrinsic argument count");
+    Ok(())
+}
