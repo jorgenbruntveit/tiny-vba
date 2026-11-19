@@ -196,8 +196,11 @@ pub(crate) fn project(text: &str, modules: &[Description]) -> Result<Vec<ModuleK
     Ok(result)
 }
 pub(crate) fn name_map(bytes: &[u8], cp: u16, modules: &[Description]) -> Result<()> {
+    // [MS-OVBA] 2.3.3 requires PROJECTMODULES order, but Excel for Mac can write
+    // PROJECTwm in PROJECT stream order and still opens such files, so match by name.
     let mut r = Reader::new(bytes);
-    for module in modules {
+    let mut remaining: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+    for _ in modules {
         let start = r.pos;
         while r.u8()? != 0 {}
         let raw = bytes
@@ -209,9 +212,12 @@ pub(crate) fn name_map(bytes: &[u8], cp: u16, modules: &[Description]) -> Result
         let raw = bytes
             .get(start..r.pos.saturating_sub(2))
             .ok_or_else(|| corrupt("Unicode name map"))?;
-        if ansi != module.name || unicode(raw)? != module.name {
-            return Err(corrupt("PROJECTwm/dir name mismatch"));
-        }
+        let wide = unicode(raw)?;
+        let at = remaining
+            .iter()
+            .position(|name| *name == ansi && *name == wide)
+            .ok_or_else(|| corrupt("PROJECTwm/dir name mismatch"))?;
+        remaining.swap_remove(at);
     }
     if r.u16()? != 0 {
         return Err(corrupt("name map terminator"));

@@ -498,3 +498,73 @@ fn cyclic_container_metadata_and_impossible_header_counts_are_rejected() {
         );
     }
 }
+
+/// One PROJECTwm entry: MBCS name, NUL, UTF-16LE name, UTF-16 NUL.
+fn name_map_entry(ansi: &str, unicode: &str) -> Vec<u8> {
+    let mut entry = ansi.as_bytes().to_vec();
+    entry.push(0);
+    entry.extend(support::wide(unicode));
+    entry.extend([0; 2]);
+    entry
+}
+fn name_map(entries: &[(&str, &str)]) -> Vec<u8> {
+    let mut map = entries
+        .iter()
+        .flat_map(|(ansi, unicode)| name_map_entry(ansi, unicode))
+        .collect::<Vec<_>>();
+    map.extend([0; 2]);
+    map
+}
+#[test]
+fn name_map_entries_are_matched_by_name_not_directory_order() {
+    let specs = [
+        Spec::new("First", "First", "Module"),
+        Spec::new("Second", "Second", "Module"),
+        Spec::new("Third", "Third", "Module"),
+    ];
+    // Excel for Mac writes PROJECTwm in PROJECT stream order rather than the
+    // PROJECTMODULES order [MS-OVBA] 2.3.3 specifies; Excel opens such files.
+    let mut f = Fixture::new(1252, &specs);
+    f.wm = Some(name_map(&[
+        ("Third", "Third"),
+        ("First", "First"),
+        ("Second", "Second"),
+    ]));
+    let p = decode(&f.bytes(), &Limits::default()).unwrap();
+    let names = p
+        .modules
+        .iter()
+        .map(|m| m.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["First", "Second", "Third"]);
+
+    for entries in [
+        // A duplicate entry leaves another module unmapped.
+        [("First", "First"), ("First", "First"), ("Second", "Second")],
+        // An unknown name.
+        [("Third", "Third"), ("First", "First"), ("Other", "Other")],
+        // The MBCS and UTF-16 names of one entry must name the same module.
+        [("Third", "First"), ("First", "Third"), ("Second", "Second")],
+    ] {
+        let mut f = Fixture::new(1252, &specs);
+        f.wm = Some(name_map(&entries));
+        let error = decode(&f.bytes(), &Limits::default()).unwrap_err();
+        assert_eq!(error.code, "VBA_PROJECT_CORRUPT", "{entries:?}");
+        assert_eq!(error.message, "PROJECTwm/dir name mismatch", "{entries:?}");
+    }
+    // Too few entries reach the terminator early.
+    let mut f = Fixture::new(1252, &specs);
+    f.wm = Some(name_map(&[("Third", "Third"), ("First", "First")]));
+    assert_eq!(code(&f), "VBA_PROJECT_CORRUPT");
+    // Malformed UTF-16 keeps its own decode error rather than a name mismatch.
+    let mut f = Fixture::new(1252, &specs);
+    let mut map = name_map_entry("Third", "Third");
+    map.extend(b"First\0");
+    map.extend([0x00, 0xd8, 0, 0]); // unpaired high surrogate
+    map.extend(name_map_entry("Second", "Second"));
+    map.extend([0; 2]);
+    f.wm = Some(map);
+    let error = decode(&f.bytes(), &Limits::default()).unwrap_err();
+    assert_eq!(error.code, "VBA_PROJECT_CORRUPT");
+    assert_eq!(error.message, "unpaired UTF-16 surrogate in metadata");
+}
