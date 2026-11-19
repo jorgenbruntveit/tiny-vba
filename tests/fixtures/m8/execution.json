@@ -1,15 +1,15 @@
 {
   "schema": 1,
   "profile": "m8-local-v1",
-  "date": "2026-11-13",
+  "date": "2026-11-19",
   "local_status": "NOT_RUN",
   "office_observations": "NOT_RUN",
-  "selection_sha256": "b17ab0e789c9349a4e232ad636fa26b527c9cdde245024b12243fc7df8d12191",
-  "runtime_tree_sha256": "8c8c9bf918aa450bd5bc171f1db726a12f36a79fcfdf4c2956d7dcaf5d3542a7",
+  "selection_sha256": "548032405b14df5341e8a970f2b8c12811ee80679cabf32c6e6626beecf92f8f",
+  "runtime_tree_sha256": "ae965b76fd79f64dbd33d89a1b87421478e370cc809d9324eccd18acf15c0588",
   "evidence_basis": [
     "authored-contract",
     "inherited-mac-oracle"
   ],
   "gates": [],
-  "notes": "New CI portability candidate. Historical full local/host receipts are archived under baseline-2026-11-08 and do not certify this changed tree. Fresh checks are recorded separately; remote platform results require GitHub Actions."
+  "notes": "Import and binding compatibility candidate. Historical full local/host receipts are archived under baseline-2026-11-08 and do not certify this changed tree. Fresh checks are recorded separately; remote platform results require GitHub Actions."
 }
