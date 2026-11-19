@@ -99,6 +99,8 @@ now available separately; see [native persistence](forms.md).
 `ModuleKind::UserForm` and `Module::form` retain designer identity, exact source,
 attributes and native resources independently. Embedded imports reconcile designer
 storage, VBFrame and admitted f/o/x resources before attachment.
+VBFrame headers admit `TypeInfoVer`, which Excel for Mac writes, as an inert integer
+property; native Export copies the line unchanged. Other unknown designer properties refuse.
 `forms::decode_export` consumes native `.frm` bytes, an explicit code page and
 caller-supplied `.frx` bytes. `forms::companion_name` returns a validated local
 basename; no codec performs filesystem access. Records, strings, counts and

@@ -914,3 +914,48 @@ fn native_frame_appearance_reconciles_and_refuses_invalid_values_before_attachme
         .is_err()
     );
 }
+
+#[test]
+fn designer_typeinfover_is_an_integer_property_kept_through_export() {
+    // Excel for Mac writes TypeInfoVer in a UserForm's VBFrame designer header.
+    let with = |line: &str| {
+        String::from_utf8(fixture::export())
+            .unwrap()
+            .replace(" ClientHeight", &format!(" {line}\r\n ClientHeight"))
+    };
+    let attach = |export: &str| {
+        forms::decode_export(
+            "NativeForm.frm",
+            export.as_bytes(),
+            1252,
+            &[Resource {
+                name: "NativeForm.frx".into(),
+                bytes: fixture::companion(),
+            }],
+            &Limits::default(),
+        )
+    };
+    let native = attach(&with("TypeInfoVer = 54")).unwrap();
+    assert_eq!(native.design, decode(&fixture::companion()).unwrap().design);
+    let out =
+        forms::encode_export(&native, &native.design, &native.source, &Limits::default()).unwrap();
+    let frm = String::from_utf8(out[0].bytes.clone()).unwrap();
+    assert!(frm.contains(" TypeInfoVer = 54\r\n"), "{frm}");
+    let reopened = forms::decode_export(
+        &out[0].name,
+        &out[0].bytes,
+        1252,
+        &out[1..],
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(reopened.design, native.design);
+
+    let error = attach(&with("TypeInfoVer = new")).unwrap_err();
+    assert_eq!(error.code, "VBA_PROJECT_CORRUPT");
+    let error = attach(&with("TypeInfoVer = 1\r\n TypeInfoVer = 2")).unwrap_err();
+    assert_eq!(error.code, "VBA_PROJECT_CORRUPT");
+    // Other unknown designer properties still refuse.
+    let error = attach(&with("TypeInfoRevision = 1")).unwrap_err();
+    assert_eq!(error.code, "VBA_PROJECT_UNSUPPORTED");
+}

@@ -155,6 +155,7 @@ pub(super) fn parse(input: &str, export: bool) -> Result<Header> {
             "bordercolor",
             "borderstyle",
             "specialeffect",
+            "typeinfover",
         ]
         .contains(&key.as_str())
         {
