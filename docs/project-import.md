@@ -101,6 +101,9 @@ attributes and native resources independently. Embedded imports reconcile design
 storage, VBFrame and admitted f/o/x resources before attachment.
 VBFrame headers admit `TypeInfoVer`, which Excel for Mac writes, as an inert integer
 property; native Export copies the line unchanged. Other unknown designer properties refuse.
+A stored form or container LogicalSize whose width or height is zero takes the
+corresponding DisplayedSize value ([MS-OFORMS] 2.5.44); a different logical size is
+a scrollable form and still refuses as unsupported.
 `forms::decode_export` consumes native `.frm` bytes, an explicit code page and
 caller-supplied `.frx` bytes. `forms::companion_name` returns a validated local
 basename; no codec performs filesystem access. Records, strings, counts and
