@@ -4,6 +4,12 @@ The supported runtime profile is `native-forms-common-v1`. Native `.frm`/`.frx`
 files and admitted embedded Office resources attach without executing VBA.
 The retired custom form format has no shipping codec, converter or file route.
 
+Frame and MultiPage storage is read as Office writes it: a container site may
+omit its zero ObjectStreamSize and does not need fSelectChild, a MultiPage's
+internal TabStrip may be unnamed, and a Page's visibility is its tab's flag (the
+page site's fVisible marks only the page on display). Rewriting keeps a Page's
+caption in its tab only and keeps a stored zero LogicalSize.
+
 ## Controls and runtime state
 
 Common controls are Label, TextBox, CommandButton, CheckBox, OptionButton,

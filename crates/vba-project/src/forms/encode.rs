@@ -797,6 +797,23 @@ fn rewrite(
         } else {
             leaf(data, after)?
         };
+        if before.kind == Kind::Page {
+            // A Page site's fVisible marks the page on display, as Office writes
+            // it; Page.Visible itself lives in the tab. Follow the selection when
+            // the tabs change, and keep the bit as read otherwise.
+            let mut shown = after.clone();
+            shown.visible = match new_tabs.as_ref().filter(|_| tabs_changed) {
+                Some(tabs) => {
+                    after.visible
+                        && usize::try_from(tabs.selected).ok()
+                            == pages.iter().position(|p| *p == id)
+                }
+                None => s.value(4, 0x33) & 2 != 0,
+            };
+            records.push((id, site(raw_site, &shown, data.len())?, data));
+            count += 1;
+            continue;
+        }
         records.push((id, site(raw_site, after, data.len())?, data));
         count += 1;
     }
@@ -862,20 +879,47 @@ fn rewrite(
     } else {
         (&new.caption, new.width, new.height, new.enabled)
     };
+    // DisplayedSize is the designer's. A LogicalSize dimension of 0 means "the
+    // displayed size" (MS-OFORMS 2.5.44) and stays 0: Office writes a Page's
+    // LogicalSize as (0, 0), and replacing it changes how Office paints the
+    // page. ScrollPosition keeps the value read.
+    let mut stored = Reader::new(record.extra);
+    if record.mask & (1 << 10) != 0 {
+        stored.take(8)?;
+    }
+    let logical = if record.mask & (1 << 11) != 0 {
+        let lw = i32::from_le_bytes(stored.take(4)?.try_into().map_err(|_| budget())?);
+        let lh = i32::from_le_bytes(stored.take(4)?.try_into().map_err(|_| budget())?);
+        pair(
+            if lw == 0 { 0 } else { width },
+            if lh == 0 { 0 } else { height },
+        )
+    } else {
+        Vec::new()
+    };
+    let scroll = if record.mask & (1 << 12) != 0 {
+        stored.take(8)?.to_vec()
+    } else {
+        Vec::new()
+    };
     let mut extra = Vec::new();
     record.mask |= 1 << 10;
     extra.extend(pair(width, height));
-    if record.mask & (1 << 11) != 0 {
-        extra.extend(pair(width, height));
-    }
-    if record.mask & (1 << 12) != 0 {
-        extra.extend(pair(0, 0));
-    }
+    extra.extend(logical);
+    extra.extend(scroll);
     // A UserForm's caption normally lives only in VBFrame; Office then leaves
     // FormControl.Caption clear, and writing it as well makes Office draw the
-    // caption again inside the form. Keep the original representation; nested
-    // Frame/Page captions have no VBFrame copy and need the field when set.
-    if record.mask & (1 << 19) != 0 || (parent.is_some() && !caption.is_empty()) {
+    // caption again inside the form. Keep the original representation; a
+    // nested Frame's caption has no VBFrame copy and needs the field when set.
+    // A Page's caption lives in its MultiPage's tab, and Office draws a Page
+    // FormControl.Caption again inside the page, so only a Frame gets one.
+    let container =
+        |kind| parent.is_some_and(|id| old.controls.iter().any(|c| c.id == id && c.kind == kind));
+    if container(Kind::Page) {
+        // Clear one an earlier writer stored, so Office draws it only once.
+        record.mask &= !(1 << 19);
+        record.fields.remove(&19);
+    } else if record.mask & (1 << 19) != 0 || (container(Kind::Frame) && !caption.is_empty()) {
         fields_string(&mut record, 19, caption, &mut extra)?;
     }
     record.set(6, (flags & !4) | if enabled { 4 } else { 0 });

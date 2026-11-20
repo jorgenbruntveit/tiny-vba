@@ -330,6 +330,10 @@ fn container(
         if site.kind == Kind::Page && role != Some(Kind::MultiPage) {
             return Err(unsupported("Page outside MultiPage"));
         }
+        // Only a MultiPage's internal TabStrip may be unnamed.
+        if site.name.is_empty() && role != Some(Kind::MultiPage) {
+            return Err(corrupt("unnamed native control"));
+        }
         if role == Some(Kind::MultiPage) && !matches!(site.kind, Kind::Page | Kind::TabStrip) {
             return Err(unsupported("MultiPage child is not Page/internal TabStrip"));
         }
@@ -478,7 +482,9 @@ struct Site {
 }
 fn site(r: &mut Reader<'_>, classes: &[[u8; 16]]) -> Result<Site> {
     let mut b = block(r, 0)?;
-    let m = mask(&mut b, 0x6bff, 0x00a5)? as u64;
+    // Office omits a zero ObjectStreamSize (a container's site) and an empty
+    // Name (a MultiPage's internal TabStrip), as MS-OFORMS defaults allow.
+    let m = mask(&mut b, 0x6bff, 0x0084)? as u64;
     let name = field(&mut b, m, 0, 4, 0)?;
     let tag = field(&mut b, m, 1, 4, 0)?;
     let id = field(&mut b, m, 2, 4, 0)?;
@@ -512,8 +518,10 @@ fn site(r: &mut Reader<'_>, classes: &[[u8; 16]]) -> Result<Site> {
         _ => return Err(unsupported(&format!("native control class index {class}"))),
     };
     if flags & !0x4203f != 0
+        // A container's site is fPromoteControls, not fStreamed; Office does not
+        // set fSelectChild on the containers it writes.
         || (matches!(kind, Kind::Frame | Kind::MultiPage | Kind::Page)
-            && (flags & 0x42010) != 0x42000)
+            && (flags & 0x40010) != 0x40000)
         || (!matches!(kind, Kind::Frame | Kind::MultiPage | Kind::Page)
             && (flags & 0x42010) != 0x10)
     {
@@ -530,7 +538,10 @@ fn site(r: &mut Reader<'_>, classes: &[[u8; 16]]) -> Result<Site> {
     let row_source = field(&mut b, m, 14, 4, 0)?;
     align(&mut b, 4)?;
     let name = string(&mut b, name)?;
-    text::identifier(&name)?;
+    // Office leaves a MultiPage's internal TabStrip unnamed.
+    if !(name.is_empty() && kind == Kind::TabStrip) {
+        text::identifier(&name)?;
+    }
     let tag = string(&mut b, tag)?;
     let (left, top) = if m & (1 << 8) != 0 {
         (i32_value(&mut b)?, i32_value(&mut b)?)
@@ -1068,4 +1079,63 @@ pub fn new_designer_control(kind: Kind, id: u32, name: &str) -> Result<Control> 
             top: 0,
         },
     )
+}
+
+#[cfg(test)]
+mod office_sites {
+    use super::*;
+    /// Site records as Excel for Mac 16.115 writes them for a form built
+    /// through the VBA designer object model (MultiPage "Multi1" with pages,
+    /// its internal TabStrip, a Page and a Frame).
+    fn decode(hex: &str) -> Result<Site> {
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap_or("zz"), 16))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| corrupt("test hex"))?;
+        site(&mut Reader::new(&bytes), &[])
+    }
+    #[test]
+    fn office_container_sites_omit_a_zero_size_and_the_internal_tabstrip_name() -> Result<()> {
+        // No ObjectStreamSize; flags 0x40023 (fPromoteControls without fSelectChild).
+        let multipage = decode(
+            "00002400d5010000060000800100000023000400000039004d756c7469310000d4000000d4000000",
+        )?;
+        assert_eq!(
+            (
+                multipage.id,
+                multipage.kind,
+                multipage.name.as_str(),
+                multipage.bytes
+            ),
+            (1, Kind::MultiPage, "Multi1", 0)
+        );
+        // No Name.
+        let strip = decode("00001800e401000002000000a8000000030012000000000000000000")?;
+        assert_eq!(
+            (strip.id, strip.kind, strip.name.as_str(), strip.bytes),
+            (2, Kind::TabStrip, "", 0xa8)
+        );
+        // A page that is not on display has fVisible clear (0x40021).
+        let page = decode(
+            "00002400d50100000500008004000000210004000100070050616765320000006a000000e6020000",
+        )?;
+        assert_eq!(
+            (page.id, page.kind, page.name.as_str()),
+            (4, Kind::Page, "Page2")
+        );
+        let frame = decode(
+            "00002400d501000006000080080000002300040001000e004672616d65310000d400000031120000",
+        )?;
+        assert_eq!(
+            (frame.id, frame.kind, frame.name.as_str()),
+            (8, Kind::Frame, "Frame1")
+        );
+        // A public control still needs a name.
+        assert!(
+            decode("00001800e401000002000000a8000000030015000000000000000000").is_err(),
+            "unnamed Label"
+        );
+        Ok(())
+    }
 }

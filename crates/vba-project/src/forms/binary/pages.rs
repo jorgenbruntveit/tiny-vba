@@ -69,7 +69,9 @@ pub(super) fn reconcile(
         page.tag.clone_from(&tab.tag);
         page.control_tip_text.clone_from(&tab.tooltip);
         page.enabled &= tab.enabled;
-        page.visible &= tab.visible;
+        // Page.Visible is the tab's flag. Office sets fVisible only on the
+        // site of the page on display (the selected one).
+        page.visible = tab.visible;
         ordered.push(page);
         // Children are already preorder; preserve their immediate parent keys.
         let start = design
