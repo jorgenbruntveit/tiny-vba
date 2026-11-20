@@ -63,7 +63,8 @@ fn storage(bytes: &[u8], root: &str) -> Streams {
                 .unwrap()
                 .read_to_end(&mut data)
                 .unwrap();
-            (path.to_string_lossy().into_owned(), data)
+            // CFB paths use the platform separator; compare them as `/` paths.
+            (path.to_string_lossy().replace('\\', "/"), data)
         })
         .collect::<Vec<_>>();
     out.sort();
