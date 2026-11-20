@@ -74,6 +74,11 @@ pub fn encode_updated_project(
             let design = update
                 .and_then(|u| u.form_design.as_ref())
                 .unwrap_or(&form.design);
+            // Code-behind lives in the module stream. An unchanged design keeps
+            // the original designer storage byte for byte.
+            if *design == form.design {
+                continue;
+            }
             let resources = crate::forms::encode_embedded(form, design, source, limits)?;
             let root = format!("/{}/", module.stream_name);
             let old_paths = file

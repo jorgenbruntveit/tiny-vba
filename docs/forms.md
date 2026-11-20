@@ -72,7 +72,12 @@ Ordinary document Save preserves the original VBA project; open the exported cop
 to use persisted authored edits.
 
 Source-only MS-OVBA output uses zero module text offsets and omits module prefixes,
-SRP caches and stale free-sector cache bytes. Protected projects, read-only edits,
+SRP caches and stale free-sector cache bytes. A form whose design is unchanged keeps
+its designer storage (`VBFrame`, `f`, `o` and companions) byte for byte, including
+after a code-behind edit; only forms with a changed design are re-encoded. A
+re-encoded UserForm keeps its caption where the original stored it: when Office
+kept it only in `VBFrame` (FormControl.Caption absent), the `f` stream stays
+without it, because Office otherwise also draws it inside the form. Protected projects, read-only edits,
 identity changes, unrepresentable code-page text and unsupported resource edits
 refuse explicitly. No P-code execution, protection bypass, signature verification
 or resigning is implemented. See [persistence decisions](decisions/README.md#persistence-and-release).
