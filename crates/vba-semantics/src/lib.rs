@@ -707,6 +707,9 @@ pub fn bind_with_generated_code(
     let mut signatures = Vec::new();
     let mut syntax = Vec::new();
     let mut module_constants = Vec::new();
+    // `Public Const` of standard modules, by name: (module, value). Other
+    // modules' Private and default (Private) constants are not visible.
+    let mut exported_constants = BTreeMap::<String, Vec<(usize, Value)>>::new();
     let mut total_source = 0usize;
     let mut source_ids = BTreeSet::new();
     let mut procedure_names = BTreeSet::new();
@@ -787,6 +790,15 @@ pub fn bind_with_generated_code(
             } else {
                 value
             };
+            if module.kind == ast::ModuleKind::Standard
+                && declaration.visibility == ast::Visibility::Public
+            {
+                budget.charge(256 + payload(&value), declaration.span)?;
+                exported_constants
+                    .entry(declaration.name.key())
+                    .or_default()
+                    .push((mi, value.clone()));
+            }
             let symbol = Symbol::Constant(value);
             if constants.insert(declaration.name.key(), symbol).is_some() {
                 return Err(err("duplicate module declaration", declaration.span));
@@ -1221,10 +1233,6 @@ pub fn bind_with_generated_code(
                 .span,
         )?;
     }
-    let constant_names: BTreeSet<_> = module_constants
-        .iter()
-        .flat_map(|m| m.keys().cloned())
-        .collect();
     let mut procedures = Vec::new();
     for (sig, syntax) in signatures.iter().zip(syntax) {
         let module = modules
@@ -1247,7 +1255,7 @@ pub fn bind_with_generated_code(
             scope_names: &scope_names,
             budget: &mut budget,
             lookup: &lookup,
-            constant_names: &constant_names,
+            exported_constants: &exported_constants,
             signatures: &signatures,
             signature: sig,
             locals: Vec::new(),
@@ -1487,7 +1495,7 @@ struct Binder<'a> {
     classes: &'a [Class],
     budget: &'a mut Budget,
     lookup: &'a Lookup,
-    constant_names: &'a BTreeSet<String>,
+    exported_constants: &'a BTreeMap<String, Vec<(usize, Value)>>,
     signatures: &'a [Signature],
     signature: &'a Signature,
     locals: Vec<BoundLocal>,
@@ -1727,6 +1735,7 @@ impl Binder<'_> {
                 .local
                 .contains_key(&(self.signature.module, name.key()))
             && !self.lookup.public.contains_key(&name.key())
+            && !self.exported_constants.contains_key(&name.key())
             && self.implicit_me.iter().any(|member| *member == name.key())
     }
     fn symbol(&mut self, name: &ast::Name) -> Result<Symbol> {
@@ -1756,8 +1765,9 @@ impl Binder<'_> {
                 name.span,
             ));
         }
-        if self.constant_names.contains(&name.key()) {
-            return Err(unsupported("cross-module constant lookup", name.span));
+        if let Some(value) = self.exported_constant(name)? {
+            self.budget.charge(256 + payload(&value), name.span)?;
+            return Ok(Symbol::Constant(value));
         }
         if let Some(value) = self
             .references
@@ -1816,6 +1826,32 @@ impl Binder<'_> {
             Symbol::Constant(_) => Err(err("constant is not writable", name.span)),
         }
     }
+    /// A `Public Const` of another standard module, after locals, the
+    /// module's own constants and its own procedures. Two such constants, or
+    /// one and another module's public procedure, make the name ambiguous.
+    fn exported_constant(&self, name: &ast::Name) -> Result<Option<Value>> {
+        if self.symbols.contains_key(&name.key())
+            || self
+                .lookup
+                .local
+                .contains_key(&(self.signature.module, name.key()))
+        {
+            return Ok(None);
+        }
+        let Some(found) = self.exported_constants.get(&name.key()) else {
+            return Ok(None);
+        };
+        let mut others = found
+            .iter()
+            .filter(|(module, _)| *module != self.signature.module);
+        let Some((_, value)) = others.next() else {
+            return Ok(None);
+        };
+        if others.next().is_some() || self.lookup.public.contains_key(&name.key()) {
+            return Err(err(format!("ambiguous name {}", name.spelling), name.span));
+        }
+        Ok(Some(value.clone()))
+    }
     fn callee(&self, name: &ast::Name) -> Result<usize> {
         let is_result = self.signature.kind == ast::ProcedureKind::Function
             && name.spelling.eq_ignore_ascii_case(&self.signature.name);
@@ -1827,6 +1863,12 @@ impl Binder<'_> {
         }
         if let Some(id) = self.lookup.local.get(&(self.signature.module, name.key())) {
             return Ok(*id);
+        }
+        if self.exported_constant(name)?.is_some() {
+            return Err(err(
+                format!("constant {} is not a procedure", name.spelling),
+                name.span,
+            ));
         }
         let ids = self.lookup.public.get(&name.key()).ok_or_else(|| {
             if matches!(
@@ -3068,6 +3110,15 @@ impl Binder<'_> {
                         },
                     });
                 }
+                // Another standard module's Public Const precedes host globals
+                // and library functions.
+                if let Some(value) = self.exported_constant(name)? {
+                    self.budget.charge(256 + payload(&value), name.span)?;
+                    return Ok(Expr {
+                        span: expr.span,
+                        kind: ExprKind::Constant(value),
+                    });
+                }
                 if !self.symbols.contains_key(&name.key())
                     && let Some(import) = self
                         .imports
@@ -3856,6 +3907,14 @@ impl Binder<'_> {
                         },
                     });
                 }
+                // A project constant shadows host globals and library
+                // procedures such as `DoEvents`, and is not callable.
+                if self.exported_constant(name)?.is_some() {
+                    return Err(err(
+                        format!("constant {} is not a procedure", name.spelling),
+                        name.span,
+                    ));
+                }
                 // Document-module implicit `Me` members precede host globals.
                 if self.implicit_me_member(name) {
                     return Ok(Statement {
@@ -4094,6 +4153,9 @@ fn intrinsic_constant(name: &str) -> Option<Value> {
         "vbmsgboxsetforeground" => Some(Value::Long(65536)),
         "vbmsgboxright" => Some(Value::Long(524288)),
         "vbmsgboxrtlreading" => Some(Value::Long(1048576)),
+        // FormShowConstants
+        "vbmodal" => Some(Value::Long(1)),
+        "vbmodeless" => Some(Value::Long(0)),
         // VbMsgBoxResult
         "vbok" => Some(Value::Long(1)),
         "vbcancel" => Some(Value::Long(2)),
