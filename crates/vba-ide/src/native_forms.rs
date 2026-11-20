@@ -314,7 +314,14 @@ impl Ide {
             symbols: vec![],
         };
         crate::form_project::checked_handlers(&form, &candidate, true)?;
+        // A form whose storage cannot be scanned still imports; Save/Export of
+        // its edits reads the same streams and refuses then.
+        let reserved =
+            vba_project::forms::next_control_id(&native, &vba_project::Limits::default()).ok();
         let id = self.insert_form(form, &native.source)?;
+        if let (Some(designer), Some(reserved)) = (self.forms.get_mut(&id), reserved) {
+            designer.reserve_control_ids(reserved);
+        }
         for diagnostic in &native.diagnostics {
             self.message(diagnostic);
         }
@@ -381,6 +388,11 @@ impl Ide {
             }
             let mut native = if let Some(n) = original.design.controls.iter().find(|n| n.id == c.id)
             {
+                if n.parent != c.parent {
+                    return Err(error(
+                        "moving a native control to another container is not supported",
+                    ));
+                }
                 n.clone()
             } else {
                 let kind = match c.kind {
@@ -443,17 +455,38 @@ impl Ide {
                     })
             });
             if current_order != expected {
+                // A Page's position is its MultiPage's tab order, which Save keeps.
+                let kept = expected
+                    .iter()
+                    .filter(|id| current_order.contains(id))
+                    .copied()
+                    .collect::<Vec<_>>();
+                if c.kind == ControlKind::Page && current_order != kept {
+                    return Err(error(
+                        "reordering MultiPage pages is not supported; page order follows the tabs",
+                    ));
+                }
                 native.tab_index =
                     i16::try_from(order).map_err(|_| error("native tab order limit"))?;
             }
             controls.push(native);
         }
+        // A Page's identity also lives in its MultiPage's internal TabStrip and
+        // page list, which this encoder does not rewrite.
+        if original.design.controls.iter().any(|p| {
+            p.kind == Kind::Page
+                && !controls.iter().any(|c| c.id == p.id)
+                && controls.iter().any(|c| Some(c.id) == p.parent)
+        }) {
+            return Err(error("deleting a MultiPage page is not supported"));
+        }
         design.controls = controls;
-        let files = vba_project::forms::encode_export_named(
+        let files = vba_project::forms::encode_export_designed(
             original,
             &form.name,
             &design,
             &module.text,
+            designer.largest_control_id(),
             &vba_project::Limits::default(),
         )?;
         Ok(NativeFormSave {

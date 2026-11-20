@@ -18,6 +18,17 @@ pub fn encode_updated_project(
     updates: &[ModuleUpdate],
     limits: &Limits,
 ) -> Result<Vec<u8>> {
+    encode_updated_project_designed(original, updates, &[], limits)
+}
+/// As [`encode_updated_project`], with the largest control ID each form's
+/// designer has given out, by module. An edited form's NextAvailableID is at
+/// least that, so IDs deleted since the form was opened are not reused.
+pub fn encode_updated_project_designed(
+    original: &[u8],
+    updates: &[ModuleUpdate],
+    largest_ids: &[(ModuleId, u32)],
+    limits: &Limits,
+) -> Result<Vec<u8>> {
     limits.validate()?;
     let before = crate::decode(original, limits)?;
     if updates.len() > before.modules.len() {
@@ -79,7 +90,12 @@ pub fn encode_updated_project(
             if *design == form.design {
                 continue;
             }
-            let resources = crate::forms::encode_embedded(form, design, source, limits)?;
+            let largest = largest_ids
+                .iter()
+                .find(|(id, _)| *id == module.id)
+                .map_or(0, |(_, n)| *n);
+            let resources =
+                crate::forms::encode_embedded_designed(form, design, source, largest, limits)?;
             let root = format!("/{}/", module.stream_name);
             let old_paths = file
                 .walk_storage(root.trim_end_matches('/'))

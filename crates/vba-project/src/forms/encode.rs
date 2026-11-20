@@ -296,12 +296,49 @@ fn split_sites<'a>(r: &mut Reader<'a>) -> Result<Vec<&'a [u8]>> {
     sites.end()?;
     Ok(out)
 }
+/// Where a container's site records start in its `f` stream tail.
+fn sites_start(record: &Record<'_>) -> Result<usize> {
+    let mut tail = Reader::new(record.tail);
+    if record.mask & (1 << 20) != 0 {
+        super::binary::skip_font(&mut tail)?;
+    }
+    if record.value(6, 4) & 0x8000 == 0 {
+        super::binary::skip_classes(&mut tail)?;
+    }
+    Ok(tail.pos)
+}
+/// The lowest control ID a designer may give a new control on `original`: above
+/// every site ID stored in every container, including sites the public design
+/// does not show (a MultiPage's internal TabStrip), and above each container's
+/// NextAvailableID, the largest ID used so far.
+pub fn next_control_id(original: &NativeForm, limits: &Limits) -> Result<u32> {
+    limits.validate()?;
+    let (_, resources) = resource_streams(original, limits)?;
+    let mut next = 1u32;
+    // Stream names compare case-insensitively, as the decoder resolves them.
+    for r in resources
+        .iter()
+        .filter(|r| r.name.to_ascii_lowercase().ends_with("/f"))
+    {
+        let record = Record::read(&r.bytes, false, FORM)?;
+        // NextAvailableID is the largest ID used so far (MS-OFORMS 2.5.55).
+        next = next.max(record.value(3, 0).checked_add(1).ok_or_else(budget)?);
+        let mut tail = Reader::new(record.tail);
+        tail.pos = sites_start(&record)?;
+        for site in split_sites(&mut tail)? {
+            let id = Record::read(site, false, SITE)?.value(2, 0);
+            next = next.max(id.checked_add(1).ok_or_else(budget)?);
+        }
+    }
+    Ok(next)
+}
 fn rewrite(
     resources: &mut Vec<Resource>,
     path: &str,
     old: &Design,
     new: &Design,
     parent: Option<u32>,
+    largest_id: u32,
     depth: usize,
 ) -> Result<()> {
     if depth > 8 {
@@ -317,13 +354,8 @@ fn rewrite(
         .clone();
     let mut record = Record::read(&raw, false, FORM)?;
     let mut tail = Reader::new(record.tail);
-    if record.mask & (1 << 20) != 0 {
-        super::binary::skip_font(&mut tail)?;
-    }
+    tail.pos = sites_start(&record)?;
     let flags = record.value(6, 4);
-    if flags & 0x8000 == 0 {
-        super::binary::skip_classes(&mut tail)?;
-    }
     let prefix = record.tail.get(..tail.pos).ok_or_else(budget)?.to_vec();
     let sites = split_sites(&mut tail)?;
     let suffix = record.tail.get(tail.pos..).ok_or_else(budget)?;
@@ -365,7 +397,15 @@ fn rewrite(
         }
         let data = if matches!(before.kind, Kind::Frame | Kind::MultiPage | Kind::Page) {
             let child_path = format!("{path}/i{id:02}");
-            rewrite(resources, &child_path, old, new, Some(id), depth + 1)?;
+            rewrite(
+                resources,
+                &child_path,
+                old,
+                new,
+                Some(id),
+                largest_id,
+                depth + 1,
+            )?;
             Vec::new()
         } else if before.caption == after.caption
             && before.text == after.text
@@ -415,16 +455,16 @@ fn rewrite(
             .position(|c| c.id == *id)
             .map_or(0, |i| i + 1)
     });
-    let next_id = new
+    // NextAvailableID is the largest ID used so far (MS-OFORMS 2.5.55).
+    let largest = new
         .controls
         .iter()
         .map(|c| c.id)
         .chain(records.iter().map(|(id, _, _)| *id))
         .max()
         .unwrap_or(0)
-        .checked_add(1)
-        .ok_or_else(budget)?;
-    record.set(3, record.value(3, 0).max(next_id));
+        .max(largest_id);
+    record.set(3, record.value(3, 0).max(largest));
     let mut next_sites = Vec::new();
     let mut next_objects = Vec::new();
     for (_, site, data) in records {
@@ -560,6 +600,20 @@ pub fn encode_export_named(
     source: &str,
     limits: &Limits,
 ) -> Result<Vec<Resource>> {
+    encode_export_designed(original, name, design, source, 0, limits)
+}
+/// As [`encode_export_named`], for a designer that has given out control IDs
+/// up to `largest_id`. Each container's NextAvailableID (the largest ID used,
+/// MS-OFORMS 2.5.55) is at least that, so the IDs of controls deleted since the
+/// form was opened, saved in between or not, are never given out again.
+pub fn encode_export_designed(
+    original: &NativeForm,
+    name: &str,
+    design: &Design,
+    source: &str,
+    largest_id: u32,
+    limits: &Limits,
+) -> Result<Vec<Resource>> {
     limits.validate()?;
     if name.len() > 64
         || name.is_empty()
@@ -584,7 +638,15 @@ pub fn encode_export_named(
     }
     text::attributes(source, name)?;
     let (frame, mut resources) = resource_streams(original, limits)?;
-    rewrite(&mut resources, "", &original.design, design, None, 0)?;
+    rewrite(
+        &mut resources,
+        "",
+        &original.design,
+        design,
+        None,
+        largest_id,
+        0,
+    )?;
     let mut file = cfb::CompoundFile::create(Cursor::new(Vec::new())).map_err(container_error)?;
     for resource in resources {
         if let Some((parent, _)) = resource.name.rsplit_once('/')
@@ -740,10 +802,22 @@ pub fn encode_embedded(
     source: &str,
     limits: &Limits,
 ) -> Result<Vec<Resource>> {
+    encode_embedded_designed(original, design, source, 0, limits)
+}
+/// As [`encode_embedded`], for a designer that has given out control IDs up
+/// to `largest_id` (see [`encode_export_designed`]).
+pub fn encode_embedded_designed(
+    original: &NativeForm,
+    design: &Design,
+    source: &str,
+    largest_id: u32,
+    limits: &Limits,
+) -> Result<Vec<Resource>> {
     if original.format != Format::Embedded {
         return Err(unsupported("embedded native origin required"));
     }
-    let files = encode_export(original, design, source, limits)?;
+    let files =
+        encode_export_designed(original, &original.name, design, source, largest_id, limits)?;
     let first = files.first().ok_or_else(budget)?;
     let export = super::decode_export(
         &first.name,

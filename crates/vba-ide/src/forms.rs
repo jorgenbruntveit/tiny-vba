@@ -228,6 +228,43 @@ impl Form {
         Ok(())
     }
 }
+/// Containers precede their contents and each container's subtree stays
+/// contiguous, as native forms persist and paint them. Siblings keep their
+/// current relative (z-) order. A list with an unknown parent or a cycle is
+/// returned unchanged for [`Form::validate`] to refuse.
+fn container_preorder(controls: Vec<Control>) -> Vec<Control> {
+    fn visit(
+        controls: &[Control],
+        parent: Option<u32>,
+        depth: usize,
+        seen: &mut [bool],
+        order: &mut Vec<usize>,
+    ) {
+        if depth > 9 {
+            return;
+        }
+        for (i, c) in controls.iter().enumerate() {
+            if c.parent == parent && seen.get(i) == Some(&false) {
+                if let Some(s) = seen.get_mut(i) {
+                    *s = true;
+                }
+                order.push(i);
+                visit(controls, Some(c.id), depth + 1, seen, order);
+            }
+        }
+    }
+    let mut seen = vec![false; controls.len()];
+    let mut order = Vec::with_capacity(controls.len());
+    visit(&controls, None, 0, &mut seen, &mut order);
+    if order.len() != controls.len() {
+        return controls;
+    }
+    let mut slots = controls.into_iter().map(Some).collect::<Vec<_>>();
+    order
+        .into_iter()
+        .filter_map(|i| slots.get_mut(i).and_then(Option::take))
+        .collect()
+}
 #[derive(Clone, Copy, Debug)]
 pub enum Align {
     Left,
@@ -489,6 +526,15 @@ impl FormDesigner {
         self.trim();
         Ok(())
     }
+    /// Never allocate a control ID below `next`, for IDs a native form already
+    /// stores outside the public designer (such as a MultiPage's internal TabStrip).
+    pub(crate) fn reserve_control_ids(&mut self, next: u32) {
+        self.next_id = self.next_id.max(next);
+    }
+    /// The largest control ID this designer has given out or reserved.
+    pub(crate) fn largest_control_id(&self) -> u32 {
+        self.next_id.saturating_sub(1)
+    }
     /// Validate a complete candidate before committing geometry, identity or history.
     pub fn edit(&mut self, edit: DesignEdit) -> Result<()> {
         let mut candidate = self.form.clone();
@@ -544,8 +590,21 @@ impl FormDesigner {
                 added = Some(id);
             }
             DesignEdit::Delete => {
-                candidate.controls.retain(|c| !selected(c));
-                candidate.tab_order.retain(|id| !self.selected.contains(id));
+                // A container goes with its contents, as in the VBA designer.
+                let mut removed = self.selected.clone();
+                loop {
+                    let before = removed.len();
+                    for c in &candidate.controls {
+                        if c.parent.is_some_and(|p| removed.contains(&p)) {
+                            removed.insert(c.id);
+                        }
+                    }
+                    if removed.len() == before {
+                        break;
+                    }
+                }
+                candidate.controls.retain(|c| !removed.contains(&c.id));
+                candidate.tab_order.retain(|id| !removed.contains(id));
             }
             DesignEdit::Replace(control) => {
                 let target = candidate
@@ -627,9 +686,11 @@ impl FormDesigner {
             }
             DesignEdit::Front | DesignEdit::Back => {
                 let front = matches!(edit, DesignEdit::Front);
+                // A Page's position is its tab order, not a z-order.
+                let moved = |c: &Control| selected(c) && c.kind != ControlKind::Page;
                 candidate
                     .controls
-                    .sort_by_key(|c| if front { selected(c) } else { !selected(c) });
+                    .sort_by_key(|c| if front { moved(c) } else { !moved(c) });
             }
             DesignEdit::Group => {
                 if self.selected.len() < 2 {
@@ -722,6 +783,7 @@ impl FormDesigner {
                 }
             }
         }
+        candidate.controls = container_preorder(candidate.controls);
         candidate.validate()?;
         if candidate == self.form {
             return Ok(());
