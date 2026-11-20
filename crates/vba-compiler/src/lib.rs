@@ -39,6 +39,10 @@ pub struct CompileOptions {
     /// module's `VB_Name` (case-insensitively). Bare eligible names resolve to the
     /// instance receiver before host globals. Metadata only; never executes anything.
     pub document_members: std::collections::BTreeMap<String, Vec<String>>,
+    /// Embedding-generated code: source identity -> byte offset where generated
+    /// procedures start (0 for a wholly generated source), such as UserForm glue.
+    /// Those frames alias only the module variables they name. Metadata only.
+    pub generated_code: BTreeMap<vba_diagnostics::SourceId, u32>,
 }
 impl Default for CompileOptions {
     fn default() -> Self {
@@ -53,6 +57,7 @@ impl Default for CompileOptions {
             capabilities: ir::Capabilities::ir7_structural(),
             limits: ir::VerifyLimits::default(),
             document_members: std::collections::BTreeMap::new(),
+            generated_code: BTreeMap::new(),
         }
     }
 }
@@ -75,13 +80,14 @@ pub fn compile_modules(
     {
         return Err(error("invalid entry/revision/profile identifier"));
     }
-    let program = bound::bind_with_procedure_aliases(
+    let program = bound::bind_with_generated_code(
         modules,
         &options.entry,
         &options.imports,
         &options.references,
         &options.document_members,
         &options.procedure_aliases,
+        &options.generated_code,
     )?;
     if options.class_runtime_names.len() > 256 {
         return Err(resource());

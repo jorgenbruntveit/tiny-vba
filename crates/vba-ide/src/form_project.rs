@@ -1835,6 +1835,26 @@ impl Ide {
             })
         })
     }
+    /// Generated code in [`Self::form_modules`]: the glue after each form's authored
+    /// text, and every support or temporary source that is not an authored module.
+    pub(crate) fn generated_code(
+        &self,
+        modules: &[vba_syntax::ParseResult],
+    ) -> std::collections::BTreeMap<SourceId, u32> {
+        modules
+            .iter()
+            .filter_map(|parsed| {
+                let id = parsed.module.source.id();
+                match self.modules.iter().find(|m| m.id == id) {
+                    Some(m) if self.forms.contains_key(&id) => {
+                        u32::try_from(m.text.len()).ok().map(|start| (id, start))
+                    }
+                    Some(_) => None,
+                    None => Some((id, 0)),
+                }
+            })
+            .collect()
+    }
     pub(crate) fn form_modules(&self) -> Result<Vec<vba_syntax::ParseResult>> {
         let mut modules = Vec::new();
         let services = self.form_services_requested();

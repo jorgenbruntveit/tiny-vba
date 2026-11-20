@@ -289,6 +289,10 @@ fn validate(
         }
         let mut fields = BTreeSet::new();
         let mut methods = BTreeSet::new();
+        // Event handler lookup by name, built once per class on first use; each
+        // WithEvents field/event pair then costs a bounded tree lookup instead of
+        // rescanning the method table.
+        let mut handlers: Option<BTreeMap<String, &ClassMethod>> = None;
         for field in &class.fields {
             if let Some(source) = field.auto_new {
                 budget.table(p.classes.len())?;
@@ -365,13 +369,22 @@ fn validate(
                         {
                             continue;
                         }
-                        let handler_name = format!("{}_{}", field.name, event_name);
-                        budget.table(class.methods.len())?;
-                        if let Some(handler) = class
-                            .methods
-                            .iter()
-                            .find(|m| m.name.eq_ignore_ascii_case(&handler_name))
-                        {
+                        let handler_name =
+                            format!("{}_{}", field.name, event_name).to_ascii_lowercase();
+                        let handlers = match &mut handlers {
+                            Some(handlers) => handlers,
+                            empty => {
+                                budget.table(class.methods.len())?;
+                                let mut map = BTreeMap::new();
+                                for method in &class.methods {
+                                    map.entry(method.name.to_ascii_lowercase())
+                                        .or_insert(method);
+                                }
+                                empty.insert(map)
+                            }
+                        };
+                        budget.charge(32, 0)?;
+                        if let Some(&handler) = handlers.get(&handler_name) {
                             let handler_proc = p
                                 .procedures
                                 .get(handler.procedure.0 as usize)

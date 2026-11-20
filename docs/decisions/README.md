@@ -127,3 +127,4 @@ and evidence references.
 - [ADR 0102 — Offline preparation and validation of M8 release evidence](0102-m8-release-evidence-gate.md)
 
 - [0103 — CI portability and offline oracle source](0103-ci-portability-and-offline-oracle-source.md)
+- [0104 — Frame aliases for embedding-generated code](0104-generated-code-frame-aliases.md)
