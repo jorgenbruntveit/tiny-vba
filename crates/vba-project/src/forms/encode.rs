@@ -450,7 +450,13 @@ fn rewrite(
     if record.mask & (1 << 12) != 0 {
         extra.extend(pair(0, 0));
     }
-    fields_string(&mut record, 19, caption, &mut extra)?;
+    // A UserForm's caption normally lives only in VBFrame; Office then leaves
+    // FormControl.Caption clear, and writing it as well makes Office draw the
+    // caption again inside the form. Keep the original representation; nested
+    // Frame/Page captions have no VBFrame copy and need the field when set.
+    if record.mask & (1 << 19) != 0 || (parent.is_some() && !caption.is_empty()) {
+        fields_string(&mut record, 19, caption, &mut extra)?;
+    }
     record.set(6, (flags & !4) | if enabled { 4 } else { 0 });
     let mut site_bytes = Vec::new();
     for _ in 0..count {
