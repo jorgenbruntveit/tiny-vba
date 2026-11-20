@@ -32,6 +32,15 @@ explicitly; metadata discovery never activates external objects/libraries.
 See [module contexts](vba_module_types_and_execution_contexts.md) and
 [name/object resolution](vba_excel_context_and_object_resolution.md).
 
+A standard module's `Public Const` is visible in other modules' procedures.
+`Const` without a modifier is Private, as in VBA. Locals, the module's own
+constants and its own procedures come first; project constants then precede
+host globals and library names such as `DoEvents` or `vbModeless`. Two
+modules exporting the same constant, or an exported constant and another
+module's public procedure, are an ambiguous name; a constant used as a call is
+refused. `Module.Name` qualification of a constant and constant initializers
+that use another module's constant are not supported yet.
+
 Bound calls retain nominal types, parameter modes and canonical ByRef locations.
 Named/optional/omitted arguments preserve source-order evaluation and map into
 declaration order without replay. Omitted argument metadata is distinct from a

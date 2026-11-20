@@ -2072,8 +2072,9 @@ impl Ide {
                 )?,
                 ModuleKind::Class,
             )?);
-            let mut support =
-                String::from("Public Const vbModal As Long=1\nPublic Const vbModeless As Long=0\n");
+            // vbModal and vbModeless are VBA library constants (intrinsic), so a
+            // project's own constant of the same name shadows them.
+            let mut support = String::new();
             support.push_str(crate::form_colors::VALIDATE);
             support.push_str(crate::form_font::COPY);
             support.push_str(crate::form_dynamic::INITIALIZE);
