@@ -544,6 +544,34 @@ pub fn bind_with_procedure_aliases(
     document_members: &BTreeMap<String, Vec<String>>,
     procedure_aliases: &BTreeMap<String, (String, String)>,
 ) -> Result<BoundProgram> {
+    bind_with_generated_code(
+        parsed,
+        entry,
+        imports,
+        references,
+        document_members,
+        procedure_aliases,
+        &BTreeMap::new(),
+    )
+}
+/// As [`bind_with_procedure_aliases`], with embedding-generated code identified by
+/// source and the byte offset where it starts (0 for a wholly generated source).
+/// A generated procedure's frame aliases only the module variables it names, so
+/// host glue that grows with a form's controls does not copy every field into
+/// every frame. Authored procedures keep aliases for all module variables, so
+/// Locals, watches and declaration checks are unchanged.
+pub fn bind_with_generated_code(
+    parsed: &[ast::ParseResult],
+    entry: &str,
+    imports: &[vba_foreign::Import],
+    references: &vba_foreign::ReferenceSet,
+    document_members: &BTreeMap<String, Vec<String>>,
+    procedure_aliases: &BTreeMap<String, (String, String)>,
+    generated_code: &BTreeMap<vba_diagnostics::SourceId, u32>,
+) -> Result<BoundProgram> {
+    if generated_code.len() > 256 {
+        return Err(Diagnostic::new("VBA0111", "source count limit"));
+    }
     vba_foreign::validate_imports(imports)?;
     if parsed.is_empty() || parsed.len() > 256 {
         return Err(Diagnostic::new("VBA0111", "source count limit"));
@@ -1312,6 +1340,35 @@ pub fn bind_with_procedure_aliases(
             binder.me_slot = Some(binder.locals.len().saturating_sub(1));
         }
         binder.collect(&syntax.body, &mut local_names)?;
+        // Host-generated procedures alias only the module variables they name.
+        // The token set over-approximates the names a body can bind.
+        let named = if generated_code
+            .get(&module.source.id())
+            .is_some_and(|start| syntax.span.start() >= *start)
+        {
+            let mut named = BTreeSet::new();
+            let first = module
+                .tokens
+                .partition_point(|token| token.span.start() < syntax.span.start());
+            for token in module
+                .tokens
+                .get(first..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|token| token.span.end() <= syntax.span.end())
+            {
+                binder.budget.charge(1, token.span)?;
+                if let Ok(text) = token.text(&module.source) {
+                    named.insert(
+                        text.trim_end_matches(['$', '%', '&', '!', '#', '@'])
+                            .to_ascii_lowercase(),
+                    );
+                }
+            }
+            Some(named)
+        } else {
+            None
+        };
         for declaration in &module.declarations {
             // Events declare signatures rather than executable bodies. Keep their
             // typed parameters; instance-field aliases belong to executable frames.
@@ -1319,6 +1376,14 @@ pub fn bind_with_procedure_aliases(
                 continue;
             }
             if declaration.constant.is_some() || local_names.contains(&declaration.name.key()) {
+                continue;
+            }
+            // Standard-module arrays are initialized through their alias below.
+            if named
+                .as_ref()
+                .is_some_and(|named| !named.contains(&declaration.name.key()))
+                && (module.kind != ast::ModuleKind::Standard || declaration.dimensions.is_none())
+            {
                 continue;
             }
             let element = kind(declaration.ty.as_ref(), &declaration.name, references)?;

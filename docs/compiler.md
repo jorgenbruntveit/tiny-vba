@@ -53,10 +53,19 @@ identities. Call continuations preserve caller operands and resume without
 re-evaluating effects. Hidden support/attribute records do not become authored
 breakpoint sites. See [attribute projection](vba-attributes-and-editor-projection.md).
 
+Each authored procedure's frame aliases every module variable, which Locals,
+watches and declaration checks rely on. An embedding marks its generated code
+with `CompileOptions::generated_code` (source identity and the byte offset where
+generated procedures start). Those frames alias only the module variables their
+tokens name, so per-control UserForm glue grows linearly with a form's controls
+instead of copying every field into every frame. See [ADR 0104](decisions/0104-generated-code-frame-aliases.md).
+
 Verification checks instruction operands, indices, stack effects and joins,
 branch/checkpoint targets, call signatures, location types, source maps and
 capability requirements before execution. Work and input-derived metadata are
-bounded. Resource failures are distinct from unsupported features and VBA errors.
+bounded. WithEvents handler matching builds one name map per class and charges a
+bounded lookup per field/event pair, not a rescan of the method table.
+Resource failures are distinct from unsupported features and VBA errors.
 The [bytecode specification](bytecode-vm-specification.md) defines the foundational
 IR 1 layout; versioned decisions define the extensions.
 

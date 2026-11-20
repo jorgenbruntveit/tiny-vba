@@ -916,6 +916,7 @@ impl Ide {
                 class_interfaces,
                 procedure_aliases: self.form_procedure_aliases(),
                 document_members: self.document_members.clone(),
+                generated_code: self.generated_code(&modules),
                 ..Default::default()
             },
         )
@@ -971,6 +972,7 @@ impl Ide {
                 class_interfaces,
                 procedure_aliases: self.form_procedure_aliases(),
                 document_members: self.document_members.clone(),
+                generated_code: self.generated_code(&modules),
                 ..Default::default()
             },
         )
