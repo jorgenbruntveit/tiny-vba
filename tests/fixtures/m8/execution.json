@@ -4,12 +4,12 @@
   "date": "2026-11-20",
   "local_status": "NOT_RUN",
   "office_observations": "NOT_RUN",
-  "selection_sha256": "f54caad908614722d8ccdb1b9185c213a34946152c1d56c1418ac9a19052624c",
-  "runtime_tree_sha256": "e4319c66f7b4b672e6ed15b8ad1b78e0237d046383124a8f1a8adf16cc3424df",
+  "selection_sha256": "fcd3c5bebb4feb90e4a5eda3c271d0b0cf2a08a24222b534cad6f2b083c4114c",
+  "runtime_tree_sha256": "41814111935413ff1077191a603427baae29bb495bf4718233bf9e4b3d85d7bb",
   "evidence_basis": [
     "authored-contract",
     "inherited-mac-oracle"
   ],
   "gates": [],
-  "notes": "Native designer container candidate. Historical full local/host receipts are archived under baseline-2026-11-08 and do not certify this changed tree. Fresh checks are recorded separately; remote platform results require GitHub Actions."
+  "notes": "MultiPage page edit candidate. Historical full local/host receipts are archived under baseline-2026-11-08 and do not certify this changed tree. Fresh checks are recorded separately; remote platform results require GitHub Actions."
 }

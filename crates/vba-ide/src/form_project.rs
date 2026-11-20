@@ -776,6 +776,32 @@ pub(crate) fn checked_handlers(
     }
     Ok(names)
 }
+/// Each native MultiPage's tabs as the designer currently has its Pages, so a
+/// renamed or deleted Page runs with the tab list Save would write.
+fn current_tabs(
+    native: &NativeForm,
+    form: &Form,
+) -> Result<BTreeMap<u32, vba_project::forms::TabBehavior>> {
+    use vba_project::forms::Kind;
+    let mut design = native.design.clone();
+    design
+        .controls
+        .retain(|c| c.kind != Kind::Page || form.controls.iter().any(|f| f.id == c.id));
+    for c in design.controls.iter_mut().filter(|c| c.kind == Kind::Page) {
+        if let Some(f) = form.controls.iter().find(|f| f.id == c.id) {
+            c.name.clone_from(&f.name);
+            c.caption.clone_from(&f.caption);
+            c.visible = f.visible;
+            c.enabled = f.enabled;
+        }
+    }
+    vba_project::forms::sync_multipage_tabs(&native.design, &mut design)?;
+    Ok(design
+        .controls
+        .into_iter()
+        .filter_map(|c| c.tabs.map(|t| (c.id, t)))
+        .collect())
+}
 fn compiled_form(
     form: &Form,
     module: &Module,
@@ -783,6 +809,10 @@ fn compiled_form(
     ranges: bool,
 ) -> Result<String> {
     form.validate()?;
+    let current = native
+        .map(|n| current_tabs(n, form))
+        .transpose()?
+        .unwrap_or_default();
     let handlers = checked_handlers(form, module, native.is_some())?;
     let call = |name: &str| {
         if handlers.contains(&name.to_ascii_lowercase()) {
@@ -1063,11 +1093,19 @@ fn compiled_form(
         }
         if let Some(control) = native.and_then(|n| n.design.controls.iter().find(|n| n.id == c.id))
         {
+            // A Page's tab is the one at its position among its MultiPage's pages.
+            let page_index = c.parent.and_then(|p| {
+                form.controls
+                    .iter()
+                    .filter(|o| o.parent == Some(p) && o.kind == ControlKind::Page)
+                    .position(|o| o.id == c.id)
+            });
             if c.kind == ControlKind::Page
-                && let Some(tab) = native
-                    .and_then(|n| n.design.controls.iter().find(|p| Some(p.id) == c.parent))
-                    .and_then(|p| p.tabs.as_ref())
-                    .and_then(|t| t.tabs.iter().find(|t| t.name == c.name))
+                && let Some(tab) = c
+                    .parent
+                    .and_then(|p| current.get(&p))
+                    .zip(page_index)
+                    .and_then(|(t, i)| t.tabs.get(i))
             {
                 source.push_str(&format!(
                     "{temp}.Accelerator={}\n",
@@ -1101,7 +1139,7 @@ fn compiled_form(
                     list.column_count, list.bound_column, list.text_column
                 ));
             }
-            if let Some(tabs) = &control.tabs {
+            if let Some(tabs) = current.get(&c.id).or(control.tabs.as_ref()) {
                 source.push_str(&format!("{temp}.VbaValue={}\n{temp}.VbaTabOrientation={}\n{temp}.VbaStyle={}\n{temp}.MultiRow={}\n{temp}.ShowToolTips={}\n{temp}.TabFixedWidth={}\n{temp}.TabFixedHeight={}\n",tabs.selected,tabs.orientation,tabs.style,boolean(tabs.multi_row),boolean(tabs.tooltips),tabs.fixed_width as f32*(72./2540.),tabs.fixed_height as f32*(72./2540.)));
                 for (i, tab) in tabs
                     .tabs
@@ -1142,10 +1180,7 @@ fn compiled_form(
         }
     }
     for c in &form.controls {
-        if let Some(tabs) = native
-            .and_then(|n| n.design.controls.iter().find(|n| n.id == c.id))
-            .and_then(|c| c.tabs.as_ref())
-        {
+        if let Some(tabs) = current.get(&c.id) {
             source.push_str(&format!(
                 "Vba{}.VbaInitializeSelection {}\n",
                 c.name, tabs.selected
@@ -1951,14 +1986,36 @@ impl Ide {
                         "change",
                         "class_initialize",
                     ];
-                    for tab in self
-                        .native_forms
-                        .values()
-                        .flat_map(|f| &f.design.controls)
-                        .filter_map(|c| c.tabs.as_ref())
-                        .flat_map(|t| &t.tabs)
-                    {
-                        let key = tab.name.to_ascii_lowercase();
+                    // A MultiPage's members are its Pages by their current control
+                    // names; a TabStrip's are its tabs by tab name. Office keeps a
+                    // MultiPage's internal tab names (Tab1, ...) apart from Page names.
+                    let mut members = Vec::new();
+                    for (id, native) in &self.native_forms {
+                        if kind == ControlKind::MultiPage {
+                            if let Some(designer) = self.forms.get(id) {
+                                members.extend(
+                                    designer
+                                        .form()
+                                        .controls
+                                        .iter()
+                                        .filter(|c| c.kind == ControlKind::Page)
+                                        .map(|c| c.name.clone()),
+                                );
+                            }
+                        } else {
+                            members.extend(
+                                native
+                                    .design
+                                    .controls
+                                    .iter()
+                                    .filter(|c| c.kind == vba_project::forms::Kind::TabStrip)
+                                    .filter_map(|c| c.tabs.as_ref())
+                                    .flat_map(|t| t.tabs.iter().map(|t| t.name.clone())),
+                            );
+                        }
+                    }
+                    for member in &members {
+                        let key = member.to_ascii_lowercase();
                         if !key.starts_with("vba")
                             && !reserved.contains(&key.as_str())
                             && names.insert(key)
@@ -1968,7 +2025,7 @@ impl Ide {
                             } else {
                                 "VbaTabs"
                             };
-                            source.push_str(&format!("Public Property Get {}() As Object\nSet {}={collection}.VbaNamed({})\nEnd Property\n",tab.name,tab.name,vba_string(&tab.name)));
+                            source.push_str(&format!("Public Property Get {member}() As Object\nSet {member}={collection}.VbaNamed({})\nEnd Property\n",vba_string(member)));
                         }
                     }
                 }

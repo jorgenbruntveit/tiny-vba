@@ -77,11 +77,34 @@ const LABEL: &[(u8, usize)] = &[
     (11, 2),
 ];
 const BUTTON: &[(u8, usize)] = &[(0, 4), (1, 4), (2, 4), (3, 4), (4, 4), (6, 1), (8, 2)];
+/// MS-OFORMS 2.2.9 TabStripPropMask fields that carry data.
+const TABSTRIP: &[(u8, usize)] = &[
+    (0, 4),
+    (1, 4),
+    (2, 4),
+    (5, 4),
+    (6, 1),
+    (8, 4),
+    (9, 4),
+    (11, 4),
+    (12, 4),
+    (15, 4),
+    (17, 4),
+    (18, 4),
+    (20, 4),
+    (21, 4),
+    (22, 4),
+    (23, 4),
+];
+/// MS-OFORMS 2.2.6 MultiPageProperties: PageCount and the TabStrip ID.
+const MULTIPAGE: &[(u8, usize)] = &[(1, 4), (2, 4)];
 struct Record<'a> {
     version: u16,
     mask: u64,
     wide: bool,
     fields: BTreeMap<u8, u32>,
+    /// The record's ExtraDataBlock as read; `encode` takes a new one.
+    extra: &'a [u8],
     tail: &'a [u8],
 }
 fn align(bytes: &mut Vec<u8>, n: usize) {
@@ -98,7 +121,8 @@ impl<'a> Record<'a> {
         let mut r = Reader::new(bytes);
         let version = r.u16()?;
         let n = r.u16()? as usize;
-        let mut b = Reader::new(r.take(n)?);
+        let block = r.take(n)?;
+        let mut b = Reader::new(block);
         let mut mask = u64::from(b.u32()?);
         if wide {
             mask |= u64::from(b.u32()?) << 32;
@@ -122,6 +146,7 @@ impl<'a> Record<'a> {
             mask,
             wide,
             fields,
+            extra: block.get(b.pos..).ok_or_else(budget)?,
             tail: r.take(bytes.len() - r.pos)?,
         })
     }
@@ -252,6 +277,296 @@ fn site(raw: &[u8], c: &super::Control, bytes: usize) -> Result<Vec<u8>> {
     r.set(6, u32::from(c.tab_index as u16));
     r.encode(SITE, &extra, &[])
 }
+/// A site record with only its object stream size changed.
+fn with_object_size(raw: &[u8], bytes: usize) -> Result<Vec<u8>> {
+    let r = Record::read(raw, false, SITE)?;
+    if r.mask & (1 << 5) == 0 {
+        return Err(corrupt("native site without object data"));
+    }
+    // Bits 0..=4 are all four-byte fields, so the size field's offset is fixed.
+    let at = 8 + 4 * (0..5).filter(|bit| r.mask & (1 << bit) != 0).count();
+    let mut out = raw.to_vec();
+    out.get_mut(at..at + 4)
+        .ok_or_else(|| corrupt("native site size"))?
+        .copy_from_slice(&u32::try_from(bytes).map_err(|_| budget())?.to_le_bytes());
+    Ok(out)
+}
+/// One ArrayString (MS-OFORMS 2.4.14.1): a character count with the
+/// compression flag, then the text, padded to four bytes. Text whose
+/// characters all fit in one byte is stored compressed.
+fn array_string(value: &str) -> Result<Vec<u8>> {
+    if value.contains('\0') || value.encode_utf16().count() > 8192 {
+        return Err(budget());
+    }
+    if value.is_empty() {
+        // An empty string has a zero count and no compression flag.
+        return Ok(0u32.to_le_bytes().to_vec());
+    }
+    let narrow = value.chars().all(|c| u32::from(c) < 0x100);
+    let (count, mut bytes) = if narrow {
+        let bytes = value
+            .chars()
+            .map(|c| u32::from(c) as u8)
+            .collect::<Vec<_>>();
+        (
+            u32::try_from(bytes.len()).map_err(|_| budget())? | 0x8000_0000,
+            bytes,
+        )
+    } else {
+        let units = value.encode_utf16().collect::<Vec<_>>();
+        (
+            u32::try_from(units.len()).map_err(|_| budget())?,
+            units.iter().flat_map(|u| u.to_le_bytes()).collect(),
+        )
+    };
+    align(&mut bytes, 4);
+    let mut out = count.to_le_bytes().to_vec();
+    out.extend(bytes);
+    Ok(out)
+}
+/// The ArrayStrings of one TabStrip array, each with its exact bytes.
+fn array_strings(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    let mut r = Reader::new(bytes);
+    let mut out = Vec::new();
+    while r.pos < bytes.len() {
+        if out.len() >= super::MAX_CONTROLS {
+            return Err(budget());
+        }
+        let start = r.pos;
+        let count = r.u32()?;
+        let chars = (count & 0x7fff_ffff) as usize;
+        let value = if count & 0x8000_0000 != 0 {
+            r.take(chars)?.iter().map(|b| char::from(*b)).collect()
+        } else {
+            text::unicode(r.take(chars.checked_mul(2).ok_or_else(budget)?)?)?
+        };
+        skip(&mut r, 4)?;
+        out.push((value, bytes.get(start..r.pos).ok_or_else(budget)?.to_vec()));
+    }
+    Ok(out)
+}
+/// A site record's Name (the first string of its extra data).
+fn site_name(site: &Record<'_>) -> Result<String> {
+    let count = site.value(0, 0);
+    let n = (count & 0x7fff_ffff) as usize;
+    let bytes = site
+        .extra
+        .get(..n)
+        .ok_or_else(|| corrupt("native site name"))?;
+    if count & 0x8000_0000 != 0 {
+        Ok(bytes.iter().map(|b| char::from(*b)).collect())
+    } else {
+        text::unicode(bytes)
+    }
+}
+/// Bring each MultiPage's tab list in line with its pages after designer
+/// edits. A Page's caption, tag, tooltip and state persist in its
+/// MultiPage's internal TabStrip; internal tab names, accelerators and the
+/// selected tab follow their pages. Adding or reordering pages is refused.
+pub fn sync_multipage_tabs(original: &Design, design: &mut Design) -> Result<()> {
+    let multipages = design
+        .controls
+        .iter()
+        .filter(|c| c.kind == Kind::MultiPage)
+        .map(|c| c.id)
+        .collect::<Vec<_>>();
+    for id in multipages {
+        let pages_of = |d: &Design| {
+            d.controls
+                .iter()
+                .filter(|c| c.parent == Some(id) && c.kind == Kind::Page)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let Some(before) = original.controls.iter().find(|c| c.id == id) else {
+            continue;
+        };
+        let behavior = before
+            .tabs
+            .as_ref()
+            .ok_or_else(|| corrupt("MultiPage tabs"))?;
+        let (old_pages, new_pages) = (pages_of(original), pages_of(design));
+        if behavior.tabs.len() != old_pages.len() {
+            return Err(corrupt("MultiPage page/tab count"));
+        }
+        let mut tabs = Vec::new();
+        let mut kept = Vec::new();
+        for page in &new_pages {
+            let at = old_pages
+                .iter()
+                .position(|p| p.id == page.id)
+                .ok_or_else(|| unsupported("new MultiPage page"))?;
+            if kept.last().is_some_and(|last| at <= *last) {
+                return Err(unsupported("MultiPage page order edit"));
+            }
+            kept.push(at);
+            let old = behavior.tabs.get(at).ok_or_else(budget)?;
+            let was = old_pages.get(at).ok_or_else(budget)?;
+            // A tab's own state changes only when its page's state is edited.
+            let state = |now: bool, before: bool, tab: bool| if now == before { tab } else { now };
+            tabs.push(super::Tab {
+                // The internal tab name (Office writes Tab1, Tab2, ...) is not
+                // the Page's name and does not follow a Page rename.
+                name: old.name.clone(),
+                caption: page.caption.clone(),
+                tag: page.tag.clone(),
+                tooltip: page.control_tip_text.clone(),
+                accelerator: old.accelerator.clone(),
+                visible: state(page.visible, was.visible, old.visible),
+                enabled: state(page.enabled, was.enabled, old.enabled),
+            });
+        }
+        // The selected tab follows its page; if it was deleted, the page that
+        // took its place (or the new last page) is selected.
+        let selected = usize::try_from(behavior.selected)
+            .ok()
+            .filter(|s| *s < old_pages.len())
+            .map_or(behavior.selected, |old| {
+                kept.iter()
+                    .position(|k| *k == old)
+                    .or_else(|| {
+                        (!kept.is_empty()).then(|| {
+                            kept.iter()
+                                .filter(|k| **k < old)
+                                .count()
+                                .min(kept.len() - 1)
+                        })
+                    })
+                    .map_or(-1, |i| i as i32)
+            });
+        let multipage = design
+            .controls
+            .iter_mut()
+            .find(|c| c.id == id)
+            .ok_or_else(budget)?;
+        let mut next = behavior.clone();
+        next.tabs = tabs;
+        next.selected = selected;
+        multipage.tabs = Some(next);
+    }
+    Ok(())
+}
+/// Re-encode a MultiPage's internal TabStrip with the MultiPage's tabs.
+/// `previous[i]` is the index tab `i` had before. A string an edit did not
+/// change keeps that tab's exact bytes, and fields this writer does not own,
+/// such as TabsAllocated, are kept as read.
+fn tab_strip(raw: &[u8], behavior: &super::TabBehavior, previous: &[usize]) -> Result<Vec<u8>> {
+    let mut r = Record::read(raw, false, TABSTRIP)?;
+    let flag_bytes = (r.value(22, 0) as usize)
+        .checked_mul(4)
+        .ok_or_else(budget)?;
+    let props = r
+        .tail
+        .len()
+        .checked_sub(flag_bytes)
+        .and_then(|n| r.tail.get(..n))
+        .ok_or_else(|| corrupt("TabStrip tab flags"))?;
+    // ExtraDataBlock: Size, then the arrays in property order.
+    let mut old = Reader::new(r.extra);
+    let mut extra = old.take(8)?.to_vec();
+    let tabs = &behavior.tabs;
+    let arrays: [(u8, Vec<&str>); 5] = [
+        (5, tabs.iter().map(|t| t.caption.as_str()).collect()),
+        (15, tabs.iter().map(|t| t.tooltip.as_str()).collect()),
+        (17, tabs.iter().map(|t| t.name.as_str()).collect()),
+        (21, tabs.iter().map(|t| t.tag.as_str()).collect()),
+        (23, tabs.iter().map(|t| t.accelerator.as_str()).collect()),
+    ];
+    for (bit, values) in arrays {
+        let before = if r.mask & (1u64 << bit) != 0 {
+            array_strings(old.take(r.value(bit, 0) as usize)?)?
+        } else {
+            Vec::new()
+        };
+        // Captions and names are always persisted. Office keeps an optional
+        // array it wrote even when every entry is empty; a new one is written
+        // only when some entry is not.
+        let keep = matches!(bit, 5 | 17)
+            || r.mask & (1u64 << bit) != 0
+            || values.iter().any(|v| !v.is_empty());
+        if keep && !tabs.is_empty() {
+            let mut bytes = Vec::new();
+            for (i, value) in values.into_iter().enumerate() {
+                match previous
+                    .get(i)
+                    .and_then(|at| before.get(*at))
+                    .filter(|(v, _)| v == value)
+                {
+                    Some((_, exact)) => bytes.extend(exact),
+                    None => bytes.extend(array_string(value)?),
+                }
+            }
+            r.set(bit, u32::try_from(bytes.len()).map_err(|_| budget())?);
+            extra.extend(bytes);
+        } else {
+            r.mask &= !(1u64 << bit);
+            r.fields.remove(&bit);
+        }
+    }
+    old.end()?;
+    if behavior.selected < 0 {
+        r.mask &= !1;
+        r.fields.remove(&0);
+    } else {
+        r.set(0, behavior.selected as u32);
+    }
+    let states = tabs
+        .iter()
+        .map(|t| u32::from(t.visible) | (u32::from(t.enabled) << 1))
+        .collect::<Vec<_>>();
+    let mut tail = props.to_vec();
+    // TabData's file format default is zero, which is not persisted.
+    if !tabs.is_empty() && (flag_bytes > 0 || states.iter().any(|f| *f != 3)) {
+        r.set(22, u32::try_from(tabs.len()).map_err(|_| budget())?);
+        for state in states {
+            tail.extend(state.to_le_bytes());
+        }
+    } else {
+        r.mask &= !(1u64 << 22);
+        r.fields.remove(&22);
+    }
+    r.encode(TABSTRIP, &extra, &tail)
+}
+/// A MultiPage's `x` stream with only the `kept` pages, in their tab order.
+fn multipage_pages(raw: &[u8], before: &[u32], kept: &[u32]) -> Result<Vec<u8>> {
+    let mut r = Reader::new(raw);
+    let block = |r: &mut Reader<'_>| -> Result<Vec<u8>> {
+        let start = r.pos;
+        r.u16()?;
+        let n = r.u16()? as usize;
+        r.take(n)?;
+        Ok(raw.get(start..r.pos).ok_or_else(budget)?.to_vec())
+    };
+    // One extra, ignored PageProperties record precedes the real pages.
+    let mut pages = Vec::new();
+    for _ in 0..=before.len() {
+        pages.push(block(&mut r)?);
+    }
+    let properties = block(&mut r)?;
+    let mut ids = Vec::new();
+    for _ in before {
+        ids.push(r.u32()?);
+    }
+    r.end()?;
+    if ids != before {
+        return Err(corrupt("MultiPage page ID/storage mismatch"));
+    }
+    let mut out = pages.first().ok_or_else(budget)?.clone();
+    for id in kept {
+        let at = before
+            .iter()
+            .position(|b| b == id)
+            .ok_or_else(|| unsupported("new MultiPage page"))?;
+        out.extend(pages.get(at + 1).ok_or_else(budget)?);
+    }
+    let mut record = Record::read(&properties, false, MULTIPAGE)?;
+    record.set(1, u32::try_from(kept.len()).map_err(|_| budget())?);
+    out.extend(record.encode(MULTIPAGE, &[], record.tail)?);
+    for id in kept {
+        out.extend(id.to_le_bytes());
+    }
+    Ok(out)
+}
 fn split_sites<'a>(r: &mut Reader<'a>) -> Result<Vec<&'a [u8]>> {
     let n = r.u32()? as usize;
     if n > super::MAX_CONTROLS {
@@ -366,6 +681,48 @@ fn rewrite(
         .bytes
         .clone();
     let mut objects = Reader::new(&old_o);
+    // A MultiPage's pages are listed in its `x` stream, and each Page's name,
+    // caption, tag, tooltip and state also live in its internal TabStrip.
+    let multipage = parent.is_some_and(|id| {
+        old.controls
+            .iter()
+            .any(|c| c.id == id && c.kind == Kind::MultiPage)
+    });
+    fn pages_of(design: &Design, parent: Option<u32>) -> Vec<&super::Control> {
+        design
+            .controls
+            .iter()
+            .filter(|c| c.parent == parent && c.kind == Kind::Page)
+            .collect()
+    }
+    let old_pages = pages_of(old, parent)
+        .iter()
+        .map(|p| p.id)
+        .collect::<Vec<_>>();
+    let pages = pages_of(new, parent)
+        .iter()
+        .map(|p| p.id)
+        .collect::<Vec<_>>();
+    // Pages can be deleted, not added or reordered.
+    let mut last = None;
+    for id in &pages {
+        let at = old_pages
+            .iter()
+            .position(|p| p == id)
+            .ok_or_else(|| unsupported("new MultiPage page"))?;
+        if last.is_some_and(|last| at <= last) {
+            return Err(unsupported("MultiPage page order edit"));
+        }
+        last = Some(at);
+    }
+    let pages_removed = pages.len() != old_pages.len();
+    let tabs = |d: &Design| {
+        parent
+            .and_then(|id| d.controls.iter().find(|c| c.id == id))
+            .and_then(|c| c.tabs.clone())
+    };
+    let new_tabs = tabs(new);
+    let tabs_changed = multipage && (pages_removed || tabs(old) != new_tabs);
     let mut records = Vec::new();
     let mut count = 0usize;
     for raw_site in sites {
@@ -379,7 +736,30 @@ fn rewrite(
             .find(|c| c.id == id && c.parent == parent);
         // MultiPage's private TabStrip is not part of the public designer.
         let Some(before) = old_control else {
-            records.push((id, raw_site.to_vec(), data.to_vec()));
+            if multipage {
+                let private = site_name(&s)?;
+                if !private.is_empty()
+                    && new
+                        .controls
+                        .iter()
+                        .any(|c| c.parent == parent && c.name.eq_ignore_ascii_case(&private))
+                {
+                    return Err(unsupported(
+                        "a Page name used by the MultiPage's internal TabStrip",
+                    ));
+                }
+            }
+            if tabs_changed {
+                let behavior = new_tabs.as_ref().ok_or_else(|| corrupt("MultiPage tabs"))?;
+                let previous = pages
+                    .iter()
+                    .map(|id| old_pages.iter().position(|p| p == id).ok_or_else(budget))
+                    .collect::<Result<Vec<_>>>()?;
+                let data = tab_strip(data, behavior, &previous)?;
+                records.push((id, with_object_size(raw_site, data.len())?, data));
+            } else {
+                records.push((id, raw_site.to_vec(), data.to_vec()));
+            }
             count += 1;
             continue;
         };
@@ -443,6 +823,7 @@ fn rewrite(
             mask: (1 << 2) | (1 << 4) | (1 << 5) | (1 << 7),
             wide: false,
             fields,
+            extra: &[],
             tail: &[],
         };
         let raw = record.encode(SITE, &[], &[])?;
@@ -516,11 +897,26 @@ fn rewrite(
     new_tail.extend(site_bytes);
     new_tail.extend(suffix);
     let encoded = record.encode(FORM, &extra, &new_tail)?;
+    let x = format!("{path}/x");
+    let pages_x = if multipage && pages_removed {
+        let raw = &resources
+            .iter()
+            .find(|r| r.name == x)
+            .ok_or_else(|| corrupt("missing MultiPage page stream"))?
+            .bytes;
+        Some(multipage_pages(raw, &old_pages, &pages)?)
+    } else {
+        None
+    };
     for r in resources {
         if r.name == f {
             r.bytes = encoded.clone();
         } else if r.name == o {
             r.bytes = next_objects.clone();
+        } else if r.name == x
+            && let Some(bytes) = &pages_x
+        {
+            r.bytes = bytes.clone();
         }
     }
     Ok(())
@@ -593,6 +989,8 @@ pub fn encode_export(
 }
 /// Export a standalone component under its current designer name. Embedded
 /// project component identity remains checked by the project writeback boundary.
+/// A design whose Pages changed must first go through [`sync_multipage_tabs`];
+/// otherwise the reopen check refuses it.
 pub fn encode_export_named(
     original: &NativeForm,
     name: &str,
@@ -743,6 +1141,7 @@ fn resource_streams(original: &NativeForm, limits: &Limits) -> Result<(String, V
                     mask: (1 << 6) | (1 << 10) | (1 << 27),
                     wide: false,
                     fields,
+                    extra: &[],
                     tail: &[],
                 };
                 let f = record.encode(

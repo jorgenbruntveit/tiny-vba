@@ -194,12 +194,10 @@ impl Ide {
                     .iter()
                     .filter(|p| p.parent == Some(c.id))
                     .collect::<Vec<_>>();
+                // Tabs pair with Pages by position; Office names the internal
+                // tabs independently of their Pages.
                 if !c.tabs.as_ref().is_some_and(|t| {
-                    t.tabs.len() == children.len()
-                        && t.tabs
-                            .iter()
-                            .zip(&children)
-                            .all(|(tab, page)| page.kind == Kind::Page && tab.name == page.name)
+                    t.tabs.len() == children.len() && children.iter().all(|p| p.kind == Kind::Page)
                 }) {
                     return Err(error("MultiPage page/tab identity mismatch"));
                 }
@@ -471,16 +469,8 @@ impl Ide {
             }
             controls.push(native);
         }
-        // A Page's identity also lives in its MultiPage's internal TabStrip and
-        // page list, which this encoder does not rewrite.
-        if original.design.controls.iter().any(|p| {
-            p.kind == Kind::Page
-                && !controls.iter().any(|c| c.id == p.id)
-                && controls.iter().any(|c| Some(c.id) == p.parent)
-        }) {
-            return Err(error("deleting a MultiPage page is not supported"));
-        }
         design.controls = controls;
+        vba_project::forms::sync_multipage_tabs(&original.design, &mut design)?;
         let files = vba_project::forms::encode_export_designed(
             original,
             &form.name,
