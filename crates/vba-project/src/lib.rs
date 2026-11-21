@@ -9,7 +9,7 @@ pub use compression::{compress, decompress};
 pub use directory::{Information, Reference, ReferenceKind};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use vba_diagnostics::{Diagnostic, SourceFile, SourceId};
-pub use writeback::{ModuleUpdate, encode_updated_project};
+pub use writeback::{ModuleUpdate, encode_updated_project, encode_updated_project_designed};
 
 type Result<T> = std::result::Result<T, Diagnostic>;
 fn corrupt(message: &str) -> Diagnostic {

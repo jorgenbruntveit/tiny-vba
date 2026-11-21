@@ -1156,18 +1156,22 @@ fn compiled_form(
         source.push_str("VbaReorderTabs\n");
     }
     if let Some(native) = native {
-        for control in &native.design.controls {
+        // Bindings of the controls the designer still has, under their current names.
+        for c in &form.controls {
+            let Some(control) = native.design.controls.iter().find(|n| n.id == c.id) else {
+                continue;
+            };
             if !control.row_source.is_empty() {
                 source.push_str(&format!(
                     "Vba{}.RowSource={}\n",
-                    control.name,
+                    c.name,
                     vba_string(&control.row_source)
                 ));
             }
             if !control.control_source.is_empty() {
                 source.push_str(&format!(
                     "Vba{}.ControlSource={}\n",
-                    control.name,
+                    c.name,
                     vba_string(&control.control_source)
                 ));
             }

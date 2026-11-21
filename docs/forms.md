@@ -44,6 +44,15 @@ Label, TextBox and CommandButton. Imported controls retain native identities and
 resources. Designer state and authored source survive VM Reset; generated support
 code is kept separate from saved authored source.
 
+Controls stay in native painting preorder: a container precedes its contents and
+each container's contents stay together. Bring to Front and Send to Back reorder
+controls among their siblings, a container moving with its contents; a Page
+keeps its tab position, and Save/Export refuses a tab order that reorders Pages.
+Deleting a container deletes its contents. New controls take IDs above every ID
+the native form stores, including a MultiPage's internal TabStrip. A new control
+may be placed in a container; moving an imported control to another container is
+refused on Save/Export.
+
 ## Native Save and Export
 
 A native form snapshot contains exact authored source, design, native identities

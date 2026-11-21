@@ -29,6 +29,7 @@ impl Ide {
         self.compile_idle_document_callback()?;
         let mut updates = Vec::new();
         let mut sources = Vec::new();
+        let mut largest_ids = Vec::new();
         for m in &before.modules {
             let module = self
                 .modules
@@ -65,6 +66,9 @@ impl Ide {
                         .ok_or_else(|| error("native resources missing"))?,
                     &vba_project::Limits::default(),
                 )?;
+                if let Some(designer) = self.forms.get(&module.id) {
+                    largest_ids.push((m.id, designer.largest_control_id()));
+                }
                 Some(reopened.design)
             } else {
                 if self.native_form(module.id).is_some() {
@@ -79,9 +83,10 @@ impl Ide {
             });
             sources.push(module.id);
         }
-        let bytes = vba_project::encode_updated_project(
+        let bytes = vba_project::encode_updated_project_designed(
             original,
             &updates,
+            &largest_ids,
             &vba_project::Limits::default(),
         )?;
         Ok(NativeProjectSave {
