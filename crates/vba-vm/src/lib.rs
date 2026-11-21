@@ -44,7 +44,7 @@ impl Default for Limits {
             instructions: 1_000_000,
             slice: 4096,
             depth: 128,
-            locations: 4096,
+            locations: 65536,
             stack_entries: 65536,
             host_calls: 1024,
             host_polls: 4096,
@@ -653,6 +653,7 @@ impl Session {
             return Err(resource());
         }
         let instance = fresh_instance()?;
+        let location_capacity = limits.locations;
         let mut session = Self {
             default_instances: BTreeMap::new(),
             pending_result: None,
@@ -677,7 +678,7 @@ impl Session {
             instance,
             limits,
             binding,
-            store: Locations::new(u64::from(instance.0)),
+            store: Locations::with_capacity(u64::from(instance.0), location_capacity),
             kinds: BTreeMap::new(),
             frames: Vec::new(),
             state: Outcome::Yielded,
@@ -861,7 +862,7 @@ impl Session {
                         .sum::<usize>(),
                 )
             })
-            .is_none_or(|n| n > self.limits.locations.min(4096))
+            .is_none_or(|n| n > self.limits.locations)
         {
             return Err(resource());
         }
@@ -1882,10 +1883,7 @@ impl Session {
             .stack_capacity
             .checked_add(proc.max_stack as usize)
             .ok_or_else(resource)?;
-        if count > self.limits.locations
-            || count > 4096
-            || stack_capacity > self.limits.stack_entries
-        {
+        if count > self.limits.locations || stack_capacity > self.limits.stack_entries {
             return Err(resource());
         }
         let entry = proc.entry;

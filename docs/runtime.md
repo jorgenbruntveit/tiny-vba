@@ -158,8 +158,8 @@ borrow, Office registry, filesystem, network or COM object is retained by the VM
 
 ## Resource accounting and evidence
 
-Defaults: 1,000,000 instructions, slices up to 4,096, 128 explicit frames, 4,096 cumulative owned
-locations, 65,536 live reserved stack entries, 1,024 host invocations and 4,096 host polls. The foreign
+Defaults: 1,000,000 instructions, slices up to 4,096, 128 explicit frames, 65,536 cumulative owned
+locations (ADR 0106), 65,536 live reserved stack entries, 1,024 host invocations and 4,096 host polls. The foreign
 controller separately caps 1,024 Wait replies. Hard counters survive soft yields. String lengths retain
 the 32,768 UTF-16-unit ceiling. Locations are never reused within the session. Frames reserve their
 verified operand-stack maxima before executing calls; function-result copy space is charged before

@@ -219,20 +219,28 @@ pub struct Location {
 
 pub struct Locations {
     owner: u64,
+    capacity: usize,
     slots: Vec<Option<Value>>,
     generations: Vec<u64>,
 }
 impl Locations {
+    /// Slots a store created with [`Locations::new`] can allocate.
+    pub const DEFAULT_CAPACITY: usize = 4096;
     pub fn new(owner: u64) -> Self {
+        Self::with_capacity(owner, Self::DEFAULT_CAPACITY)
+    }
+    /// A store that allocates at most `capacity` slots over its lifetime.
+    pub fn with_capacity(owner: u64, capacity: usize) -> Self {
         Self {
             owner,
+            capacity,
             slots: Vec::new(),
             generations: Vec::new(),
         }
     }
     pub fn allocate(&mut self, value: Value) -> Result<Location, Diagnostic> {
         value.validate()?;
-        if self.slots.len() >= 4096 {
+        if self.slots.len() >= self.capacity {
             return Err(Diagnostic::new("VBA0003", "location budget exceeded"));
         }
         let location = Location {

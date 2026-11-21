@@ -725,7 +725,7 @@ impl Session {
             || self
                 .allocated_locations
                 .checked_add(class.fields.len())
-                .is_none_or(|n| n > self.limits.locations.min(4096))
+                .is_none_or(|n| n > self.limits.locations)
         {
             return Err(resource());
         }

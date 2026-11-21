@@ -495,7 +495,7 @@ them; raising them needs explicit configuration and checked arithmetic. The M0 l
 | Slots per procedure | 4,096 |
 | Operand entries per frame / live total | 4,096 / 65,536 |
 | Explicit call depth | 128 |
-| Location allocations in the M0 session store | 4,096 cumulative; invalidation does not reuse slots |
+| Location allocations in the session store | `Limits::locations` cumulative (default 65,536, ADR 0106); invalidation does not reuse slots |
 | Individual string | Existing 32,768 UTF-16 unit cap |
 | Call arguments / member or argument-name UTF-8 bytes | Existing 256 / 256 |
 | Total dispatched instructions / per run_slice | 1,000,000 / 4,096 |
