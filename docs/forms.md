@@ -41,6 +41,11 @@ Declarations such as `As MSForms.CheckBox` do not depend on the support class.
 | Appearance | Applicable OLE colors, typed Font identity/attributes, borders/effects, alignment and wrapping within fixed authored bounds |
 | Binding | Explicit-capability single-cell ControlSource and contiguous RowSource links; the host owns real range access |
 
+Generated navigation ranks group siblings by their TabIndex in a linear pass
+per container. Controls with equal indices follow collection order. Navigation
+visits each container's children before the next sibling, with MultiPage
+children visited in Pages collection order.
+
 Executable input requires host authorization. Raw input/default processing waits
 for ordinary callback completion; Stop/Continue must not replay an event or write.
 Reset, unload, trust loss and context changes discard stale continuations. The

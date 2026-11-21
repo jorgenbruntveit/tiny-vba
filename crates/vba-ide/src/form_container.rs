@@ -42,14 +42,13 @@ End Sub
 "#;
 pub(crate) const ROOT: &str = r#"
 Public VbaActiveControl As Object
-Private Function VbaScopeControls(ByVal key As Long,Optional ByRef pages As Boolean=False) As Object
+Private Function VbaScopeControls(ByVal key As Long) As Object
 If key=0 Then
 Set VbaScopeControls=VbaControls
 Else
 Dim owner As Object
 Set owner=VbaLookup(key)
-pages=owner.VbaKind=13
-If pages Then
+If owner.VbaKind=13 Then
 Set VbaScopeControls=owner.Pages
 Else
 Set VbaScopeControls=owner.Controls
@@ -150,34 +149,52 @@ Set VbaPublicActive=current
 End Function
 Private Sub VbaReorderTabs()
 Dim position As Long
-VbaScopeOrder 0,position
+VbaScopeOrder VbaControls,False,position
 End Sub
-Private Sub VbaScopeOrder(ByVal parent As Long,ByRef position As Long)
-Dim scan As Long
-Dim i As Long,control As Object,children As Object,kind As Integer
-Dim pages As Boolean
-Set children=VbaScopeControls(parent,pages)
+Private Sub VbaScopeOrder(ByVal children As Object,ByVal pages As Boolean,ByRef position As Long)
+Dim total As Long,i As Long,scan As Long,entry As Long,control As Object,kind As Integer
+total=children.VbaTotal
+If total=0 Then Exit Sub
 Dim entries() As Object
 entries=children.VbaEntries
 If pages Then
-For i=0 To children.VbaTotal-1
+For i=0 To total-1
 Set control=entries(i)
 control.VbaNavigationRank=position
 position=position+1
-VbaScopeOrder control.VbaId,position
+VbaScopeOrder control.Controls,False,position
 Next i
 Exit Sub
 End If
-For i=0 To children.VbaTotal-1
-For scan=0 To children.VbaTotal-1
-Set control=entries(scan)
-If control.VbaTabIndex=i Then
+' Bucket links are one-based entry numbers. Zero ends each bucket.
+Dim firstInBucket() As Long,nextInBucket() As Long
+ReDim firstInBucket(0 To total-1)
+ReDim nextInBucket(1 To total)
+' Prepend in reverse so equal TabIndex values keep collection order.
+For scan=0 To total-1
+entry=total-scan
+i=entries(entry-1).VbaTabIndex
+If i>=0 And i<total Then
+nextInBucket(entry)=firstInBucket(i)
+firstInBucket(i)=entry
+End If
+Next scan
+For i=0 To total-1
+entry=firstInBucket(i)
+VbaBucketEntry:
+If entry<>0 Then
+Set control=entries(entry-1)
 control.VbaNavigationRank=position
 position=position+1
 kind=control.VbaKind
-If kind=11 Or kind=13 Or kind=14 Then VbaScopeOrder control.VbaId,position
+If kind=13 Then
+VbaScopeOrder control.Pages,True,position
+ElseIf kind=11 Or kind=14 Then
+VbaScopeOrder control.Controls,False,position
 End If
-Next scan
+entry=nextInBucket(entry)
+GoTo VbaBucketEntry
+End If
 Next i
 End Sub
 Private Sub VbaTabChange(ByVal origin As Object,ByVal previous As Integer,ByVal requested As Integer)

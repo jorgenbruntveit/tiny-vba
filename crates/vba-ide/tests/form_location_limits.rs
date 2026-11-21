@@ -5,7 +5,7 @@ use vba_ide::forms::{Bounds, ControlKind, DesignEdit};
 use vba_ide::{Action, Ide, Limits, Mode, NoHost};
 type R<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-fn load_form(controls: impl IntoIterator<Item = ControlKind>, limits: Limits) -> R<Ide> {
+fn form_with_controls(controls: impl IntoIterator<Item = ControlKind>, limits: Limits) -> R<Ide> {
     let mut ide = Ide::new();
     ide.configure_execution_limits(limits)?;
     let id = ide.add_form("F")?;
@@ -25,10 +25,11 @@ fn load_form(controls: impl IntoIterator<Item = ControlKind>, limits: Limits) ->
         )?;
         top += 6.0;
     }
-    ide.add_module(
-        "Main.bas",
-        "Sub Main()\nLoad F\nDebug.Print \"loaded\"\nEnd Sub",
-    )?;
+    Ok(ide)
+}
+
+fn run(ide: &mut Ide, source: &str) -> R {
+    ide.add_module("Main.bas", source)?;
     ide.dispatch(Action::Run, &mut NoHost)?;
     for _ in 0..100_000 {
         if ide.mode() != Mode::Running {
@@ -36,6 +37,15 @@ fn load_form(controls: impl IntoIterator<Item = ControlKind>, limits: Limits) ->
         }
         ide.tick(&mut NoHost)?;
     }
+    Ok(())
+}
+
+fn load_form(controls: impl IntoIterator<Item = ControlKind>, limits: Limits) -> R<Ide> {
+    let mut ide = form_with_controls(controls, limits)?;
+    run(
+        &mut ide,
+        "Sub Main()\nLoad F\nDebug.Print \"loaded\"\nEnd Sub",
+    )?;
     Ok(ide)
 }
 
@@ -99,5 +109,52 @@ fn a_mixed_form_with_seventy_two_controls_loads_with_default_limits() -> R {
     let ide = load_form(controls, Limits::default())?;
     assert_eq!(ide.mode(), Mode::Completed, "{:?}", ide.diagnostics);
     assert_eq!(ide.output(), ["loaded"]);
+    Ok(())
+}
+
+#[test]
+fn large_container_form_loads_within_a_tighter_instruction_budget() -> R {
+    // Use the designer limit, including an empty child scope.
+    let controls =
+        std::iter::once(ControlKind::Frame).chain(std::iter::repeat_n(ControlKind::CheckBox, 127));
+    let limits = Limits {
+        instructions: 200_000,
+        ..Limits::default()
+    };
+    let ide = load_form(controls, limits)?;
+    assert_eq!(ide.mode(), Mode::Completed, "{:?}", ide.diagnostics);
+    assert_eq!(ide.output(), ["loaded"]);
+    Ok(())
+}
+
+#[test]
+fn tab_ranking_preserves_collection_order_for_ties_and_skips_out_of_range_indices() -> R {
+    let mut ide = form_with_controls(
+        std::iter::repeat_n(ControlKind::CheckBox, 5),
+        Limits::default(),
+    )?;
+    ide.set_text(
+        r#"Attribute VB_Name = "F"
+Option Explicit
+Public Sub CheckTabRanks()
+Dim first As Object,second As Object,third As Object,high As Object,low As Object
+Set first=Controls(0)
+Set second=Controls(1)
+Set third=Controls(2)
+Set high=Controls(3)
+Set low=Controls(4)
+first.VbaTabIndex=2
+second.VbaTabIndex=0
+third.VbaTabIndex=0
+high.VbaTabIndex=32767
+low.VbaTabIndex=-1
+VbaReorderTabs
+Debug.Print first.VbaNavigationRank,second.VbaNavigationRank,third.VbaNavigationRank,high.VbaNavigationRank,low.VbaNavigationRank
+End Sub"#
+            .into(),
+    )?;
+    run(&mut ide, "Sub Main()\nF.CheckTabRanks\nEnd Sub")?;
+    assert_eq!(ide.mode(), Mode::Completed, "{:?}", ide.diagnostics);
+    assert_eq!(ide.output(), ["2\t0\t1\t3\t4"]);
     Ok(())
 }
