@@ -287,6 +287,84 @@ fn last_reference_termination_runs_once_and_cancel_never_executes_it() -> R {
 }
 
 #[test]
+fn a_byref_field_keeps_its_owner_alive_until_the_call_returns() -> R {
+    let main = r#"Function Answer() As Long
+Dim item As Counter
+Set item=New Counter
+Change item.total,item
+Debug.Print 3
+Answer=9
+End Function
+Sub Change(ByRef n As Long,ByRef owner As Counter)
+Set owner=Nothing
+n=7
+Debug.Print 1
+End Sub"#;
+    let class = r#"Public total As Long
+Private Sub Class_Terminate()
+Debug.Print total
+End Sub"#;
+    let mut s = session(main, class)?;
+    assert_eq!(
+        drive(&mut s)?,
+        Outcome::Completed(ReturnValue::Function(Value::Long(9)))
+    );
+    let expected = ["1", "7", "3"]
+        .map(vba_values::VbaString::from_utf8)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(s.output(), expected);
+    Ok(())
+}
+
+#[test]
+fn breaking_a_strong_cycle_releases_each_instance_once() -> R {
+    let main = r#"Function Answer() As Long
+Dim first As Counter,second As Counter
+Set first=New Counter
+Set second=New Counter
+first.id=1
+second.id=2
+Set first.child=second
+Set second.child=first
+Answer=9
+End Function"#;
+    let class = r#"Public id As Long
+Public child As Counter
+Public Sub BreakLink()
+Set child=Nothing
+End Sub
+Private Sub Class_Terminate()
+Debug.Print id
+End Sub"#;
+    let mut s = session(main, class)?;
+    assert_eq!(
+        drive(&mut s)?,
+        Outcome::Completed(ReturnValue::Function(Value::Long(9)))
+    );
+    let instances = s.class_instances("Counter")?;
+    assert_eq!(instances.len(), 2);
+    assert!(s.output().is_empty());
+
+    s.schedule_instance_callback(
+        *instances.first().ok_or("first instance")?,
+        "BreakLink",
+        vec![],
+    )?;
+    assert_eq!(
+        s.run_next_callback(&mut NoHost, 64, &mut |_| Ok(false))?,
+        Outcome::Completed(ReturnValue::Sub)
+    );
+    let expected = ["2", "1"]
+        .map(vba_values::VbaString::from_utf8)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(s.output(), expected);
+    assert!(s.class_instances("Counter")?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn instance_callbacks_share_fields_and_reject_reset_handles() -> R {
     let class =
         "Private count As Long\nPrivate Sub Pressed()\ncount=count+1\nDebug.Print count\nEnd Sub";
@@ -319,6 +397,8 @@ fn instance_callbacks_share_fields_and_reject_reset_handles() -> R {
         ]
     );
     s.reset_state()?;
+    assert!(matches!(drive(&mut s)?, Outcome::Completed(_)));
+    assert_ne!(s.project_object("item")?, object);
     assert!(
         s.schedule_instance_callback(object, "Pressed", vec![])
             .is_err()
@@ -935,7 +1015,7 @@ fn releasing_a_default_root_keeps_aliases_and_recreates_an_independent_default()
 }
 
 #[test]
-fn reference_scan_metadata_survives_restore_and_tracks_object_and_variant_array_fields() -> R {
+fn restored_object_and_variant_arrays_retain_their_instances() -> R {
     let class = r#"Public id As Long
 Public phase As Long
 Private scalar(0 To 4095) As Long

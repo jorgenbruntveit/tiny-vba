@@ -4,8 +4,9 @@ mod auto_instances;
 mod classes;
 mod host_calls;
 mod host_events;
+mod instance_lifetime;
 mod project_view;
-use classes::{ClassReturn, Instance};
+use classes::{ClassReturn, Instance, instance_index};
 pub use host_calls::NestedCallResult;
 pub use host_events::{HostEventHandler, HostEventParameter};
 use std::{
@@ -193,6 +194,7 @@ pub enum Outcome {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counters {
+    /// Class lookup, event dispatch and host inspection work.
     pub instance_work: u64,
     pub enumeration_work: u64,
     pub type_checks: u64,
@@ -235,7 +237,7 @@ struct Frame {
     class_return: Option<ClassReturn>,
     enumerator_owners: Vec<vba_values::ObjectRef>,
     enumerations: BTreeMap<ir::LocalSlot, Enumeration>,
-    captured: Vec<Option<Location>>,
+    captured: BTreeMap<ir::LocalSlot, Location>,
     handler: Handler,
     id: u64,
     procedure: ir::ProcedureId,
@@ -243,7 +245,7 @@ struct Frame {
     fault_pc: ir::Pc,
     checkpoint: Option<ir::SiteId>,
     slots: Vec<Location>,
-    reference_slots: Vec<Location>,
+    borrowed_owners: Vec<vba_values::ObjectRef>,
     owned: Vec<Location>,
     stack: Vec<Operand>,
 }
@@ -276,6 +278,7 @@ struct SuspendedInvocation {
     error: ErrorState,
     raised_source: Option<String>,
     result_reference: Option<Location>,
+    host_argument_owners: Vec<vba_values::ObjectRef>,
     argument_continuation: bool,
     stack_capacity: usize,
     intrinsic_return: Option<vba_values::IntrinsicReturn>,
@@ -287,6 +290,8 @@ pub struct Session {
     preserve_instances: bool,
     break_in_class: bool,
     instances: Vec<Instance>,
+    // Number of instance identities used by previous heaps in this session.
+    instance_base: u64,
     event_connections: BTreeMap<Location, u64>,
     next_connection: u64,
     next_receiver: Option<vba_values::ObjectRef>,
@@ -320,6 +325,7 @@ pub struct Session {
     stale: bool,
     foreign: foreign::Session,
     host_result_reference: Option<Location>,
+    host_argument_owners: Vec<vba_values::ObjectRef>,
     argument_continuation: bool,
     host_intrinsic_return: Option<vba_values::IntrinsicReturn>,
     pending_fault: Option<Failure>,
@@ -334,7 +340,6 @@ pub struct Session {
     callback_outputs: VecDeque<Vec<(usize, Value)>>,
     closed: bool,
     entry_arguments: Vec<Value>,
-    reference_graph_dirty: bool,
 }
 fn command(message: &str) -> Diagnostic {
     Diagnostic::new("VBA0034", message)
@@ -661,6 +666,7 @@ impl Session {
             suspended_invocations: vec![],
             break_in_class: false,
             instances: Vec::new(),
+            instance_base: 0,
             event_connections: BTreeMap::new(),
             next_connection: 0,
             next_receiver: None,
@@ -683,7 +689,6 @@ impl Session {
             frames: Vec::new(),
             state: Outcome::Yielded,
             counters: Counters::default(),
-            reference_graph_dirty: true,
             generation: 0,
             next_frame: 0,
             visit_serial: 0,
@@ -692,6 +697,7 @@ impl Session {
             stale: false,
             foreign: foreign::Session::default(),
             host_result_reference: None,
+            host_argument_owners: vec![],
             argument_continuation: false,
             host_intrinsic_return: None,
             pending_fault: None,
@@ -824,7 +830,7 @@ impl Session {
                 &value,
                 (
                     restored.instances.as_slice(),
-                    self.instance,
+                    self.instance_base,
                     !self.program.program().classes.is_empty(),
                 ),
                 self.type_resolver.as_deref(),
@@ -867,7 +873,9 @@ impl Session {
             return Err(resource());
         }
         self.install_instances(restored)?;
-        self.default_instances = defaults;
+        for (source, object) in defaults {
+            self.remember_default_instance(source, object);
+        }
         for (key, kind, value, nominal) in prepared {
             if let Some(location) = self.persistent.get(&key).copied() {
                 self.write_value(location, value)?;
@@ -973,7 +981,7 @@ impl Session {
                 &value,
                 (
                     &self.instances,
-                    self.instance,
+                    self.instance_base,
                     !self.program.program().classes.is_empty(),
                 ),
                 self.type_resolver.as_deref(),
@@ -997,6 +1005,13 @@ impl Session {
         self.callbacks
             .try_reserve(1)
             .map_err(|_| command("callback queue limit"))?;
+        let references = self.store.object_references();
+        if let Some(object) = receiver {
+            references.retain(object);
+        }
+        for value in &prepared {
+            references.retain_value(value);
+        }
         self.callbacks.push_back(ScheduledCallback {
             receiver,
             procedure: id,
@@ -1104,7 +1119,7 @@ impl Session {
             object
         } else {
             let object = self.allocate_instance(source)?;
-            self.default_instances.insert(source, object);
+            self.remember_default_instance(source, object);
             if let Some(initializer) = class
                 .methods
                 .iter()
@@ -1157,6 +1172,7 @@ impl Session {
             error: std::mem::take(&mut self.error),
             raised_source: self.raised_source.take(),
             result_reference: self.host_result_reference.take(),
+            host_argument_owners: std::mem::take(&mut self.host_argument_owners),
             argument_continuation: std::mem::take(&mut self.argument_continuation),
             stack_capacity: std::mem::take(&mut self.stack_capacity),
             intrinsic_return: self.host_intrinsic_return.take(),
@@ -1183,10 +1199,11 @@ impl Session {
         self.error = saved.error;
         self.raised_source = saved.raised_source;
         self.host_result_reference = saved.result_reference;
+        self.host_argument_owners = saved.host_argument_owners;
         self.argument_continuation = saved.argument_continuation;
         self.stack_capacity = saved.stack_capacity;
         self.host_intrinsic_return = saved.intrinsic_return;
-        self.pending_result = None;
+        self.take_pending_result();
         self.generation = self.generation.checked_add(1).ok_or_else(resource)?;
         self.state = Outcome::Waiting;
         Ok(())
@@ -1303,8 +1320,7 @@ impl Session {
             .ok_or_else(|| command("project class/default owner mismatch"))?;
         let source = class.source;
         if self.default_instances.get(&source) == Some(&object) {
-            self.reference_graph_dirty = true;
-            self.default_instances.remove(&source);
+            self.forget_default_instance(source);
             Ok(true)
         } else {
             Ok(false)
@@ -1407,7 +1423,6 @@ impl Session {
         quota: u32,
         predicate: &mut impl FnMut(&CheckpointView) -> Result<bool>,
     ) -> Result<Outcome> {
-        self.reference_graph_dirty = true;
         if quota == 0 || quota > self.limits.slice {
             return Err(command("invalid slice allowance"));
         }
@@ -1473,7 +1488,7 @@ impl Session {
                 value,
                 (
                     &self.instances,
-                    self.instance,
+                    self.instance_base,
                     !self.program.program().classes.is_empty(),
                 ),
                 self.type_resolver.as_deref(),
@@ -1482,7 +1497,9 @@ impl Session {
                 self.limits.instructions,
             )?;
         }
-        self.callbacks.pop_front();
+        if let Some(callback) = self.callbacks.pop_front() {
+            self.release_callback_references(&callback);
+        }
         self.next_receiver = receiver;
         self.error = ErrorState::default();
         self.raised_source = None;
@@ -1537,7 +1554,7 @@ impl Session {
                 instance.alive = false;
             }
         }
-        self.instances.clear();
+        self.forget_instances();
         self.event_connections.clear();
         self.next_connection = 0;
         self.default_instances.clear();
@@ -1545,7 +1562,7 @@ impl Session {
         self.callback_output_frame = None;
         self.callback_outputs.clear();
         self.next_receiver = None;
-        self.pending_result = None;
+        self.take_pending_result();
         self.output.clear();
         self.random_state.set(runtime::INITIAL_RND_SEED);
         self.error = ErrorState::default();
@@ -1642,46 +1659,24 @@ impl Session {
             .get(self.top()?.procedure.0 as usize)
             .ok_or_else(|| invariant("procedure missing"))
     }
-    fn reference_location(&self, location: Location) -> bool {
-        self.array_types
-            .get(&location)
-            .or_else(|| self.kinds.get(&location))
-            .is_none_or(|kind| matches!(kind, ScalarKind::Object | ScalarKind::Variant))
-    }
-    fn reference_value(value: &Value) -> bool {
-        match value {
-            Value::Object(object) => object.host == 0,
-            Value::Array(array) => matches!(array.kind(), ScalarKind::Object | ScalarKind::Variant),
-            _ => false,
-        }
-    }
-    fn reference_operand(&self, operand: &Operand) -> bool {
-        match operand {
-            Operand::Reference(location) => self.reference_location(*location),
-            Operand::Value(value) => Self::reference_value(value),
-        }
-    }
     fn push(&mut self, value: Operand) -> Result<()> {
-        self.reference_graph_dirty |= self.reference_operand(&value);
         if let Operand::Value(v) = &value {
             self.charge(value_bytes(v))?;
         }
+        self.push_operand(value)
+    }
+
+    fn push_prepaid(&mut self, value: Value) -> Result<()> {
+        self.push_operand(Operand::Value(value))
+    }
+
+    fn push_operand(&mut self, value: Operand) -> Result<()> {
         let max = self.proc()?.max_stack as usize;
-        let frame = self.top_mut()?;
-        if frame.stack.len() >= max {
+        if self.top()?.stack.len() >= max {
             return Err(invariant("stack exceeds verified maximum"));
         }
-        frame.stack.push(value);
-        Ok(())
-    }
-    fn push_prepaid(&mut self, value: Value) -> Result<()> {
-        self.reference_graph_dirty |= Self::reference_value(&value);
-        let max = self.proc()?.max_stack as usize;
-        let frame = self.top_mut()?;
-        if frame.stack.len() >= max {
-            return Err(invariant("return stack exceeds verified maximum"));
-        }
-        frame.stack.push(Operand::Value(value));
+        self.retain_operand(&value);
+        self.top_mut()?.stack.push(value);
         Ok(())
     }
     fn pop(&mut self) -> Result<Operand> {
@@ -1690,7 +1685,7 @@ impl Session {
             .stack
             .pop()
             .ok_or_else(|| invariant("stack underflow"))?;
-        self.reference_graph_dirty |= self.reference_operand(&value);
+        self.release_operand(&value);
         Ok(value)
     }
     fn pop_value(&mut self) -> Result<Value> {
@@ -1727,7 +1722,7 @@ impl Session {
             value,
             (
                 &self.instances,
-                self.instance,
+                self.instance_base,
                 !self.program.program().classes.is_empty(),
             ),
             self.type_resolver.as_deref(),
@@ -1737,7 +1732,6 @@ impl Session {
         )
     }
     fn write_value(&mut self, location: Location, value: Value) -> Result<()> {
-        self.reference_graph_dirty |= self.reference_location(location);
         let values = if let Value::Array(array) = &value {
             array.elements()
         } else {
@@ -1813,7 +1807,6 @@ impl Session {
         Ok(())
     }
     fn push_frame(&mut self, id: ir::ProcedureId, args: Vec<Operand>) -> Result<()> {
-        self.reference_graph_dirty = true;
         let source = self
             .program
             .program()
@@ -1999,7 +1992,7 @@ impl Session {
                 value,
                 (
                     &self.instances,
-                    self.instance,
+                    self.instance_base,
                     !self.program.program().classes.is_empty(),
                 ),
                 self.type_resolver.as_deref(),
@@ -2010,17 +2003,24 @@ impl Session {
             values.push(v);
         }
         let mut slots = Vec::new();
-        let mut reference_slots = Vec::new();
+        let mut borrowed_owners = Vec::new();
         let mut owned = Vec::new();
         let mut stack = Vec::new();
         reserve(&mut slots, locals.len())?;
-        reserve(&mut reference_slots, locals.len())?;
+        reserve(&mut borrowed_owners, locals.len())?;
         reserve(&mut owned, owned_count)?;
         reserve(&mut stack, stack_max)?;
         reserve(&mut self.frames, 1)?;
         for (index, (local, value)) in locals.iter().zip(values).enumerate() {
             let location = match value {
-                Operand::Reference(l) => l,
+                Operand::Reference(l) => {
+                    if let Some(owner) = self.store.object_owner(l)
+                        && Some(owner) != receiver
+                    {
+                        borrowed_owners.push(owner);
+                    }
+                    l
+                }
                 Operand::Value(v) => {
                     self.charge(value_bytes(&v))?;
                     let l = self.store.allocate(v)?;
@@ -2048,30 +2048,21 @@ impl Session {
                 return Err(invariant("array alias metadata"));
             }
             slots.push(location);
-            // ByRef can point at a Variant caller slot; use its canonical type.
-            let kind = self
-                .array_types
-                .get(&location)
-                .copied()
-                .or_else(|| self.kinds.get(&location).copied())
-                .ok_or_else(|| invariant("frame slot type"))?;
-            if matches!(kind, ScalarKind::Object | ScalarKind::Variant) {
-                reference_slots.push(location);
-            }
         }
         self.allocated_locations = count;
         self.stack_capacity = stack_capacity;
         self.next_frame = self.next_frame.checked_add(1).ok_or_else(resource)?;
-        let mut captured = Vec::new();
-        reserve(&mut captured, slots.len())?;
-        captured.resize(slots.len(), None);
+        let references = self.store.object_references();
+        for object in receiver.into_iter().chain(borrowed_owners.iter().copied()) {
+            references.retain(object);
+        }
         self.frames.push(Frame {
             events: std::collections::VecDeque::new(),
             receiver,
             class_return: None,
             enumerator_owners: Vec::new(),
             enumerations: BTreeMap::new(),
-            captured,
+            captured: BTreeMap::new(),
             handler: Handler::default(),
             id: self.next_frame,
             procedure: id,
@@ -2079,7 +2070,7 @@ impl Session {
             fault_pc: entry,
             checkpoint: None,
             slots,
-            reference_slots,
+            borrowed_owners,
             owned,
             stack,
         });
@@ -2412,7 +2403,7 @@ impl Session {
         self.top_mut()?.pc = pc;
         self.top_mut()?.fault_pc = pc;
         self.top_mut()?.checkpoint = Some(site);
-        self.top_mut()?.captured.fill(None);
+        self.clear_captured_references()?;
         self.visit_serial = self.visit_serial.checked_add(1).ok_or_else(resource)?;
         self.visit = Some(Visit {
             view: self.view(site, self.visit_serial)?,
@@ -2421,10 +2412,15 @@ impl Session {
         self.pause(PauseReason::Checkpoint)
     }
     fn cleanup(&mut self) {
+        self.release_host_argument_owners();
         self.callback_output_frame = None;
         self.host_result_reference = None;
         self.argument_continuation = false;
         self.host_intrinsic_return = None;
+        let frames = std::mem::take(&mut self.frames);
+        for frame in &frames {
+            self.release_frame_references(frame);
+        }
         let native_fields = if self.preserve_instances {
             self.instances
                 .iter()
@@ -2449,13 +2445,6 @@ impl Session {
                 let _ = self.store.invalidate(*location);
             }
         }
-        self.frames.clear();
-        if !self.preserve_instances {
-            self.default_instances.clear();
-            self.instances.clear();
-        }
-        self.pending_result = None;
-        self.next_receiver = None;
         self.kinds.retain(|location, _| {
             persistent.values().any(|l| l == location)
                 || native_fields.contains(location)
@@ -2466,6 +2455,12 @@ impl Session {
                 || native_fields.contains(location)
                 || retained.contains(location)
         });
+        if !self.preserve_instances {
+            self.default_instances.clear();
+            self.forget_instances();
+        }
+        self.take_pending_result();
+        self.next_receiver = None;
         self.visit = None;
         self.pending_fault = None;
         self.stack_capacity = 0;
@@ -2489,7 +2484,7 @@ impl Session {
         }
         self.suspended_invocations.clear();
         self.closed = true;
-        self.callbacks.clear();
+        self.discard_queued_host_callbacks();
         if self.terminal() {
             self.release_native_state()?;
             self.cleanup();
@@ -2507,7 +2502,7 @@ impl Session {
         }
         self.suspended_invocations.clear();
         self.closed = true;
-        self.callbacks.clear();
+        self.discard_queued_host_callbacks();
         if self.terminal() {
             self.release_native_state()?;
             self.cleanup();
@@ -2527,7 +2522,7 @@ impl Session {
     pub fn host_lost(&mut self) -> Result<()> {
         self.suspended_invocations.clear();
         self.closed = true;
-        self.callbacks.clear();
+        self.discard_queued_host_callbacks();
         if self.terminal() {
             self.release_native_state()?;
             self.cleanup();
@@ -2594,6 +2589,7 @@ impl Session {
         self.deliver_failure(self.failure(kind, number, error.message)?)
     }
     fn deliver_failure(&mut self, failure: Failure) -> Result<()> {
+        self.release_host_argument_owners();
         self.host_result_reference = None;
         self.argument_continuation = false;
         let class_fault = self.break_in_class
@@ -2714,10 +2710,10 @@ impl Session {
                 while self.frames.len() > index + 1 {
                     self.unwind_frame()?;
                 }
-                self.reference_graph_dirty = true;
+                self.clear_operand_stack()?;
+                self.clear_event_deliveries()?;
+                self.clear_captured_references()?;
                 let frame = self.top_mut()?;
-                frame.stack.clear();
-                frame.events.clear();
                 frame.pc = target;
                 if !handler.resume_next {
                     frame.handler.fault = Some(site);
@@ -2734,7 +2730,6 @@ impl Session {
         Ok(())
     }
     fn unwind_frame(&mut self) -> Result<()> {
-        self.reference_graph_dirty = true;
         let frame = self.frames.pop().ok_or_else(|| invariant("unwind frame"))?;
         let maximum = self
             .program
@@ -2747,6 +2742,7 @@ impl Session {
             .stack_capacity
             .checked_sub(maximum)
             .ok_or_else(resource)?;
+        self.release_frame_references(&frame);
         for location in frame.owned {
             self.store.invalidate(location)?;
             self.kinds.remove(&location);
@@ -2769,7 +2765,10 @@ impl Session {
         if let Some(ClassReturn::Initialize(object) | ClassReturn::Terminate(object)) =
             frame.class_return
         {
-            self.default_instances.retain(|_, value| *value != object);
+            let source = self.instance_object(object)?.source;
+            if self.default_instances.get(&source) == Some(&object) {
+                self.forget_default_instance(source);
+            }
             self.retire_instance(object)?;
         }
         Ok(())
@@ -2821,8 +2820,7 @@ impl Session {
                     Ok(false) => {}
                 }
                 let result = self
-                    .pending_result
-                    .take()
+                    .take_pending_result()
                     .ok_or_else(|| invariant("terminal result"))?;
                 self.preserve_instances = true;
                 self.cleanup();
@@ -2831,6 +2829,7 @@ impl Session {
                 break;
             }
             if let Some(delivery) = self.top_mut()?.events.pop_front() {
+                self.release_delivery(&delivery);
                 self.next_receiver = Some(delivery.receiver);
                 if let Err(error) = self.push_frame(delivery.procedure, delivery.arguments) {
                     self.fail(error)?;
@@ -2845,32 +2844,25 @@ impl Session {
                 .get(self.top()?.pc.0 as usize)
                 .cloned()
                 .ok_or_else(|| invariant("PC outside verified code"))?;
-            if matches!(instruction, I::Checkpoint(_)) && self.visit.is_none() {
-                match self.settle_instances() {
-                    Ok(true) => continue,
-                    Err(e) => {
-                        self.fail(e)?;
-                        break;
-                    }
-                    Ok(false) => {}
-                }
-            }
             if let I::Checkpoint(site) = instruction {
-                let span = self
-                    .proc()?
-                    .checkpoints
-                    .get(site.0 as usize)
-                    .ok_or_else(|| invariant("checkpoint"))?
-                    .span;
-                if self.top()?.handler.fault.is_none() {
-                    let previous = self.top()?.enumerations.len();
-                    self.top_mut()?
-                        .enumerations
-                        .retain(|_, e| span.start() >= e.start && span.end() <= e.end);
-                    self.reference_graph_dirty |= self.top()?.enumerations.len() != previous;
+                if self.visit.is_none() {
+                    let span = self
+                        .proc()?
+                        .checkpoints
+                        .get(site.0 as usize)
+                        .ok_or_else(|| invariant("checkpoint"))?
+                        .span;
+                    self.expire_enumerations(span)?;
+                    self.clear_captured_references()?;
+                    match self.settle_instances() {
+                        Ok(true) => continue,
+                        Err(error) => {
+                            self.fail(error)?;
+                            break;
+                        }
+                        Ok(false) => {}
+                    }
                 }
-                self.reference_graph_dirty |= !self.top()?.enumerator_owners.is_empty();
-                self.top_mut()?.enumerator_owners.clear();
                 self.top_mut()?.checkpoint = Some(site);
                 if self.visit.is_none() {
                     self.visit_serial = self.visit_serial.checked_add(1).ok_or_else(resource)?;
@@ -2922,7 +2914,7 @@ impl Session {
                         .last()
                         .ok_or_else(|| invariant("default instance"))?
                         .object;
-                    self.default_instances.insert(source, object);
+                    self.remember_default_instance(source, object);
                 }
             }
             I::NewInstance(class) => self.new_instance(class)?,
@@ -2952,8 +2944,9 @@ impl Session {
                 if self.top()?.enumerations.len() >= 64 {
                     return Err(resource());
                 }
-                self.top_mut()?.enumerator_owners.clear();
-                self.top_mut()?.enumerations.insert(
+                self.clear_enumerator_owners()?;
+                self.store.object_references().retain_array(&values);
+                let previous = self.top_mut()?.enumerations.insert(
                     state,
                     Enumeration {
                         auto_new,
@@ -2964,6 +2957,11 @@ impl Session {
                         end,
                     },
                 );
+                if let Some(previous) = previous {
+                    self.store
+                        .object_references()
+                        .release_array(&previous.values);
+                }
                 self.advance()?;
             }
             I::EnumerationNext { state, control } => {
@@ -3020,27 +3018,28 @@ impl Session {
                 self.advance()?;
             }
             I::EnumerationEnd(state) => {
-                self.reference_graph_dirty = true;
-                self.top_mut()?.enumerations.remove(&state);
+                if let Some(cursor) = self.top_mut()?.enumerations.remove(&state) {
+                    self.store.object_references().release_array(&cursor.values);
+                }
                 self.advance()?;
             }
             I::SaveReference(slot) => {
                 let location = self.pop_ref()?;
                 self.store.read(location)?;
-                *self
-                    .top_mut()?
-                    .captured
-                    .get_mut(slot.0 as usize)
-                    .ok_or_else(|| invariant("capture slot"))? = Some(location);
+                self.location(slot)?;
+                let previous = self.top_mut()?.captured.insert(slot, location);
+                self.retain_operand(&Operand::Reference(location));
+                if let Some(previous) = previous {
+                    self.release_operand(&Operand::Reference(previous));
+                }
                 self.advance()?;
             }
             I::LoadReference(slot) => {
                 let location = self
                     .top()?
                     .captured
-                    .get(slot.0 as usize)
+                    .get(&slot)
                     .copied()
-                    .flatten()
                     .ok_or_else(|| invariant("reference uninitialized"))?;
                 self.store.read(location)?;
                 self.push(Operand::Reference(location))?;
@@ -3165,8 +3164,7 @@ impl Session {
                     cp.enter_pc
                 };
                 self.top_mut()?.handler.fault = None;
-                self.reference_graph_dirty = true;
-                self.top_mut()?.stack.clear();
+                self.clear_operand_stack()?;
                 self.top_mut()?.pc = pc;
                 self.error = ErrorState::default();
                 self.visit = None;
@@ -3237,9 +3235,6 @@ impl Session {
                 self.deliver_failure(failure)?;
             }
             I::Checkpoint(site) => {
-                self.top_mut()?.captured.fill(None);
-                self.reference_graph_dirty |= !self.top()?.enumerator_owners.is_empty();
-                self.top_mut()?.enumerator_owners.clear();
                 self.top_mut()?.checkpoint = Some(site);
                 self.visit = None;
                 self.advance()?;
@@ -3679,7 +3674,6 @@ impl Session {
                     }
                     self.callback_output_frame = None;
                 }
-                self.reference_graph_dirty = true;
                 let frame = self.frames.pop().ok_or_else(|| invariant("return frame"))?;
                 self.stack_capacity = self
                     .stack_capacity
@@ -3692,6 +3686,7 @@ impl Session {
                             .max_stack as usize,
                     )
                     .ok_or_else(resource)?;
+                self.release_frame_references(&frame);
                 for location in frame.owned {
                     self.store.invalidate(location)?;
                     self.kinds.remove(&location);
@@ -3726,7 +3721,7 @@ impl Session {
                         )?,
                     }
                 } else if self.frames.is_empty() {
-                    self.pending_result = Some(result);
+                    self.set_pending_result(result);
                 } else if let ReturnValue::Function(value) = result {
                     self.push_prepaid(value)?;
                 }
@@ -4034,7 +4029,7 @@ impl Session {
         let nominal_types = &self.nominal_types;
         let native = (
             self.instances.as_slice(),
-            self.instance,
+            self.instance_base,
             !self.program.program().classes.is_empty(),
         );
         let resolver = self.type_resolver.as_deref();
@@ -4105,6 +4100,7 @@ impl Session {
             *used = next;
             Ok(())
         };
+        reserve(&mut self.host_argument_owners, references.len())?;
         let view_limit = self
             .limits
             .instructions
@@ -4146,6 +4142,14 @@ impl Session {
                     protocol(&e.message)
                 }
             })?;
+        if matches!(outcome, foreign::Outcome::Suspended) {
+            for location in references {
+                if let Some(owner) = self.store.object_owner(location) {
+                    self.store.object_references().retain(owner);
+                    self.host_argument_owners.push(owner);
+                }
+            }
+        }
         // Revisit only the coercion instruction, never the target expression. Object-valued
         // default properties are resolved until a primitive or a resource/error boundary.
         if !matches!(
@@ -4165,6 +4169,9 @@ impl Session {
         self.accept_host(outcome)
     }
     fn accept_host(&mut self, outcome: foreign::Outcome) -> Result<()> {
+        if !matches!(outcome, foreign::Outcome::Suspended) {
+            self.release_host_argument_owners();
+        }
         match outcome {
             foreign::Outcome::Suspended => self.state = Outcome::Waiting,
             foreign::Outcome::Complete(value) => {
@@ -4249,7 +4256,7 @@ impl Session {
         let nominal_types = &self.nominal_types;
         let native = (
             self.instances.as_slice(),
-            self.instance,
+            self.instance_base,
             !self.program.program().classes.is_empty(),
         );
         let resolver = self.type_resolver.as_deref();
@@ -4374,7 +4381,7 @@ fn check_array_identity(
 fn check_nominal(
     expected: Option<&vba_values::NominalType>,
     value: &Value,
-    native: (&[Instance], SessionInstance, bool),
+    native: (&[Instance], u64, bool),
     resolver: Option<&dyn foreign::ObjectTypeResolver>,
     host: Option<u64>,
     checks: &mut u64,
@@ -4404,16 +4411,9 @@ fn check_nominal(
             Value::Nothing | Value::Empty => (),
             Value::Object(object) => {
                 if object.host == 0 && native.2 {
-                    let instance = object
-                        .object
-                        .checked_sub(1)
-                        .and_then(|index| usize::try_from(index).ok())
+                    let instance = instance_index(*object, native.1)
                         .and_then(|index| native.0.get(index))
-                        .filter(|i| {
-                            i.alive
-                                && i.object == *object
-                                && object.generation == u64::from(native.1.0)
-                        })
+                        .filter(|i| i.alive && i.object == *object)
                         .ok_or_else(|| {
                             runtime_diagnostic(runtime::Error::Vba {
                                 number: 91,

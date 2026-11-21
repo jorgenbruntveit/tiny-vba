@@ -1,20 +1,20 @@
 //! Each loaded control instance holds its fields in session locations, so a
-//! form's control count is bounded by `Limits::locations`. The store follows
-//! that limit; it has no separate fixed cap.
+//! form's control count is bounded by `Limits::locations`. Releasing instance
+//! references during load also needs to fit within the default work budget.
 use vba_ide::forms::{Bounds, ControlKind, DesignEdit};
 use vba_ide::{Action, Ide, Limits, Mode, NoHost};
 type R<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-fn load_form_with_labels(controls: usize, limits: Limits) -> R<Ide> {
+fn load_form(controls: impl IntoIterator<Item = ControlKind>, limits: Limits) -> R<Ide> {
     let mut ide = Ide::new();
     ide.configure_execution_limits(limits)?;
     let id = ide.add_form("F")?;
     let mut top = 12.0;
-    for _ in 0..controls {
+    for kind in controls {
         ide.edit_form(
             id,
             DesignEdit::Add(
-                ControlKind::Label,
+                kind,
                 Bounds {
                     left: 12.0,
                     top,
@@ -49,7 +49,10 @@ fn generous_instructions() -> Limits {
 #[test]
 fn a_form_with_sixty_labels_loads_with_the_default_locations() -> R {
     // About 75 locations per control: 56 Labels exceeded the former fixed 4,096.
-    let ide = load_form_with_labels(60, generous_instructions())?;
+    let ide = load_form(
+        std::iter::repeat_n(ControlKind::Label, 60),
+        generous_instructions(),
+    )?;
     assert_eq!(ide.mode(), Mode::Completed, "{:?}", ide.diagnostics);
     assert_eq!(ide.output(), ["loaded"]);
     Ok(())
@@ -61,7 +64,7 @@ fn the_locations_limit_bounds_a_form_load() -> R {
         locations: 2048,
         ..generous_instructions()
     };
-    let ide = load_form_with_labels(60, limits)?;
+    let ide = load_form(std::iter::repeat_n(ControlKind::Label, 60), limits)?;
     assert_ne!(ide.mode(), Mode::Completed);
     assert!(
         ide.diagnostics
@@ -70,5 +73,31 @@ fn the_locations_limit_bounds_a_form_load() -> R {
         "{:?}",
         ide.diagnostics
     );
+    Ok(())
+}
+
+#[test]
+fn forty_checkboxes_load_with_default_limits() -> R {
+    let ide = load_form(
+        std::iter::repeat_n(ControlKind::CheckBox, 40),
+        Limits::default(),
+    )?;
+    assert_eq!(ide.mode(), Mode::Completed, "{:?}", ide.diagnostics);
+    assert_eq!(ide.output(), ["loaded"]);
+    Ok(())
+}
+
+#[test]
+fn a_mixed_form_with_seventy_two_controls_loads_with_default_limits() -> R {
+    let controls = [
+        (ControlKind::CheckBox, 53),
+        (ControlKind::Label, 17),
+        (ControlKind::CommandButton, 2),
+    ]
+    .into_iter()
+    .flat_map(|(kind, count)| std::iter::repeat_n(kind, count));
+    let ide = load_form(controls, Limits::default())?;
+    assert_eq!(ide.mode(), Mode::Completed, "{:?}", ide.diagnostics);
+    assert_eq!(ide.output(), ["loaded"]);
     Ok(())
 }

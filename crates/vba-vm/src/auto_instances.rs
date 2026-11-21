@@ -44,6 +44,7 @@ impl Session {
             return Err(error);
         }
         if self.frames.len() > depth {
+            self.retain_operand(&Operand::Reference(location));
             self.top_mut()?.class_return = Some(ClassReturn::AutoInitialize {
                 object,
                 location,

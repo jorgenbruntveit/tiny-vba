@@ -16,8 +16,7 @@ pub(super) struct Instance {
     pub ty: vba_values::NominalType,
     pub interfaces: Vec<ir::ClassInterface>,
     pub fields: Vec<Location>,
-    // Derived from verified field types; scalar-only fields cannot retain objects.
-    pub reference_fields: Vec<Location>,
+    pub terminator: Option<ir::ProcedureId>,
     pub has_event_fields: bool,
 }
 #[derive(Clone, Copy)]
@@ -219,7 +218,6 @@ impl Session {
         procedure: ir::ProcedureId,
         arguments: Vec<Operand>,
     ) -> Result<()> {
-        self.reference_graph_dirty = true;
         let publisher = self
             .top()?
             .receiver
@@ -271,6 +269,9 @@ impl Session {
                 arguments: arguments.clone(),
             });
         }
+        for delivery in &pending {
+            self.retain_delivery(delivery);
+        }
         self.top_mut()?.events = pending;
         Ok(())
     }
@@ -285,12 +286,12 @@ impl Session {
                 }
             }
         }
-        self.instances.clear();
+        self.forget_instances();
         self.event_connections.clear();
         self.next_connection = 0;
         self.default_instances.clear();
         self.next_receiver = None;
-        self.pending_result = None;
+        self.take_pending_result();
         Ok(())
     }
     pub(super) fn snapshot_instances(&self) -> Result<Vec<Snapshot>> {
@@ -368,7 +369,7 @@ impl Session {
             connections.push(snapshot.connections.clone());
             let object = vba_values::ObjectRef {
                 host: 0,
-                object: u64::try_from(index).map_err(|_| resource())? + 1,
+                object: self.instance_base + u64::try_from(index).map_err(|_| resource())? + 1,
                 generation: u64::from(self.instance.0),
             };
             if mapping
@@ -386,7 +387,7 @@ impl Session {
                 ty: vba_values::NominalType::new("VBAProject", "1", &class.name)?,
                 interfaces: class.interfaces.clone(),
                 fields: vec![],
-                reference_fields: vec![],
+                terminator: class_terminator(class),
                 has_event_fields: class.fields.iter().any(|field| field.with_events),
             });
         }
@@ -419,7 +420,7 @@ impl Session {
                     &value,
                     (
                         &instances,
-                        self.instance,
+                        self.instance_base,
                         !self.program.program().classes.is_empty(),
                     ),
                     self.type_resolver.as_deref(),
@@ -440,6 +441,9 @@ impl Session {
         })
     }
     pub(super) fn install_instances(&mut self, mut restored: Restore) -> Result<()> {
+        for instance in &restored.instances {
+            self.store.object_references().register(instance.object);
+        }
         for ((instance, values), connections) in restored
             .instances
             .iter_mut()
@@ -456,7 +460,6 @@ impl Session {
                 .fields
                 .clone();
             reserve(&mut instance.fields, fields.len())?;
-            reserve(&mut instance.reference_fields, fields.len())?;
             for ((field, value), connection) in fields.into_iter().zip(values).zip(connections) {
                 let location = self.store.allocate(value)?;
                 self.allocated_locations = self
@@ -471,12 +474,7 @@ impl Session {
                     self.nominal_types.insert(location, ty);
                 }
                 instance.fields.push(location);
-                if matches!(
-                    field.array.unwrap_or(field.kind),
-                    ScalarKind::Object | ScalarKind::Variant
-                ) {
-                    instance.reference_fields.push(location);
-                }
+                self.store.set_object_owner(location, instance.object)?;
                 if field.with_events {
                     self.event_connections.insert(location, connection);
                     self.next_connection = self.next_connection.max(connection);
@@ -614,10 +612,7 @@ impl Session {
         Ok(Some(value))
     }
     pub(super) fn instance_object(&self, object: vba_values::ObjectRef) -> Result<&Instance> {
-        object
-            .object
-            .checked_sub(1)
-            .and_then(|index| usize::try_from(index).ok())
+        instance_index(object, self.instance_base)
             .and_then(|index| self.instances.get(index))
             .filter(|i| i.alive && i.object == object)
             .ok_or_else(|| {
@@ -748,10 +743,15 @@ impl Session {
             values.push(value);
         }
         let mut fields = Vec::new();
-        let mut reference_fields = Vec::new();
         reserve(&mut fields, class.fields.len())?;
-        reserve(&mut reference_fields, class.fields.len())?;
         reserve(&mut self.instances, 1)?;
+        let object = vba_values::ObjectRef {
+            host: 0,
+            object: self.instance_base
+                + u64::try_from(self.instances.len()).map_err(|_| resource())?
+                + 1,
+            generation: u64::from(self.instance.0),
+        };
         for (field, value) in class.fields.iter().zip(values) {
             let location = self.store.allocate(value)?;
             self.allocated_locations = self
@@ -766,21 +766,11 @@ impl Session {
                 self.nominal_types.insert(location, ty.clone());
             }
             fields.push(location);
-            if matches!(
-                field.array.unwrap_or(field.kind),
-                ScalarKind::Object | ScalarKind::Variant
-            ) {
-                reference_fields.push(location);
-            }
+            self.store.set_object_owner(location, object)?;
             if field.with_events {
                 self.event_connections.insert(location, 0);
             }
         }
-        let object = vba_values::ObjectRef {
-            host: 0,
-            object: u64::try_from(self.instances.len()).map_err(|_| resource())? + 1,
-            generation: u64::from(self.instance.0),
-        };
         self.instances.push(Instance {
             alive: true,
             terminating: false,
@@ -790,9 +780,10 @@ impl Session {
             ty: vba_values::NominalType::new("VBAProject", "1", &class.name)?,
             interfaces: class.interfaces.clone(),
             fields,
-            reference_fields,
+            terminator: class_terminator(&class),
             has_event_fields: class.fields.iter().any(|field| field.with_events),
         });
+        self.store.object_references().register(object);
         Ok(object)
     }
     pub(super) fn initialize_instance(
@@ -1090,6 +1081,7 @@ impl Session {
                 return Err(resource());
             }
             self.charge(64)?;
+            self.store.object_references().retain(object);
             self.top_mut()?.enumerator_owners.push(object);
         }
         self.next_receiver = Some(object);
@@ -1120,13 +1112,16 @@ impl Session {
     }
 
     pub(super) fn retire_instance(&mut self, object: vba_values::ObjectRef) -> Result<()> {
+        let index = instance_index(object, self.instance_base)
+            .ok_or_else(|| invariant("retired instance"))?;
         let instance = self
             .instances
-            .iter_mut()
-            .find(|i| i.object == object)
+            .get_mut(index)
+            .filter(|instance| instance.object == object)
             .ok_or_else(|| invariant("retired instance"))?;
         instance.alive = false;
         let fields = std::mem::take(&mut instance.fields);
+        self.store.object_references().unregister(object);
         for field in fields {
             self.event_connections.remove(&field);
             self.store.invalidate(field)?;
@@ -1136,132 +1131,20 @@ impl Session {
         }
         Ok(())
     }
-    /// Reference-count behavior: fields of every live instance retain references,
-    /// so cycles remain alive. No code runs during abnormal/reset cleanup.
+
+    /// Finish zero-reference instances at ordinary execution boundaries. Strong
+    /// cycles keep their references until explicitly broken or project teardown.
     pub(super) fn settle_instances(&mut self) -> Result<bool> {
-        if !self.reference_graph_dirty {
-            return Ok(false);
-        }
-        if self.instances.is_empty() {
-            return Ok(false);
-        }
-        loop {
-            let mut roots = BTreeSet::new();
-            let mut work = u64::try_from(self.instances.len()).map_err(|_| resource())?;
-            let mut visit = |value: &Value| -> Result<()> {
-                let values = if let Value::Array(array) = value {
-                    array.elements()
-                } else {
-                    std::slice::from_ref(value)
-                };
-                work = work
-                    .checked_add(u64::try_from(values.len()).map_err(|_| resource())?)
-                    .ok_or_else(resource)?;
-                for value in values {
-                    if let Value::Object(object) = value
-                        && object.host == 0
-                    {
-                        roots.insert((object.object, object.generation));
-                    }
-                }
-                Ok(())
-            };
-            for frame in self.frames.iter().chain(
-                self.suspended_invocations
-                    .iter()
-                    .flat_map(|invocation| &invocation.frames),
-            ) {
-                if let Some(receiver) = frame.receiver {
-                    visit(&Value::Object(receiver))?;
-                }
-                for cursor in frame.enumerations.values() {
-                    for value in cursor.values.elements() {
-                        visit(value)?;
-                    }
-                }
-                for owner in &frame.enumerator_owners {
-                    visit(&Value::Object(*owner))?;
-                }
-                for delivery in &frame.events {
-                    visit(&Value::Object(delivery.receiver))?;
-                    for operand in &delivery.arguments {
-                        match operand {
-                            Operand::Value(value) => visit(value)?,
-                            Operand::Reference(location) => visit(self.store.read(*location)?)?,
-                        }
-                    }
-                }
-                for location in &frame.reference_slots {
-                    visit(self.store.read(*location)?)?;
-                }
-                for operand in &frame.stack {
-                    match operand {
-                        Operand::Value(value) => visit(value)?,
-                        Operand::Reference(location) => visit(self.store.read(*location)?)?,
-                    }
-                }
-            }
-            for object in self.default_instances.values() {
-                visit(&Value::Object(*object))?;
-            }
-            for callback in &self.callbacks {
-                if let Some(object) = callback.receiver {
-                    visit(&Value::Object(object))?;
-                }
-                for value in &callback.arguments {
-                    visit(value)?;
-                }
-            }
-            for location in self.persistent.values() {
-                visit(self.store.read(*location)?)?;
-            }
-            for instance in self.instances.iter().filter(|i| i.alive) {
-                for location in &instance.reference_fields {
-                    visit(self.store.read(*location)?)?;
-                }
-            }
-            if let Some(ReturnValue::Function(value)) = &self.pending_result {
-                visit(value)?;
-            }
-            self.counters.instance_work = self
-                .counters
-                .instance_work
-                .checked_add(work)
-                .ok_or_else(resource)?;
-            if self.counters.instance_work > self.limits.instructions {
-                return Err(resource());
-            }
-            let candidate = self
+        while let Some(object) = self.store.object_references().next_unreferenced() {
+            let index = instance_index(object, self.instance_base)
+                .ok_or_else(|| invariant("unreferenced instance"))?;
+            let instance = self
                 .instances
-                .iter()
-                .find(|i| {
-                    i.alive
-                        && !i.terminating
-                        && !roots.contains(&(i.object.object, i.object.generation))
-                })
-                .map(|i| (i.object, i.source));
-            let Some((object, source)) = candidate else {
-                self.reference_graph_dirty = false;
-                return Ok(false);
-            };
-            let terminator = self
-                .program
-                .program()
-                .classes
-                .iter()
-                .find(|c| c.source == source)
-                .and_then(|c| {
-                    c.methods
-                        .iter()
-                        .find(|m| m.name.eq_ignore_ascii_case("Class_Terminate"))
-                })
-                .map(|m| m.procedure);
-            if let Some(procedure) = terminator {
-                self.instances
-                    .iter_mut()
-                    .find(|i| i.object == object)
-                    .ok_or_else(|| invariant("terminating instance"))?
-                    .terminating = true;
+                .get_mut(index)
+                .filter(|instance| instance.alive && instance.object == object)
+                .ok_or_else(|| invariant("unreferenced instance"))?;
+            if let Some(procedure) = instance.terminator {
+                instance.terminating = true;
                 self.next_receiver = Some(object);
                 self.push_frame(procedure, vec![])?;
                 self.top_mut()?.class_return = Some(ClassReturn::Terminate(object));
@@ -1269,7 +1152,25 @@ impl Session {
             }
             self.retire_instance(object)?;
         }
+        Ok(false)
     }
+}
+
+pub(super) fn instance_index(object: vba_values::ObjectRef, base: u64) -> Option<usize> {
+    object
+        .object
+        .checked_sub(base)?
+        .checked_sub(1)?
+        .try_into()
+        .ok()
+}
+
+fn class_terminator(class: &ir::Class) -> Option<ir::ProcedureId> {
+    class
+        .methods
+        .iter()
+        .find(|method| method.name.eq_ignore_ascii_case("Class_Terminate"))
+        .map(|method| method.procedure)
 }
 
 fn interface_bytes(interface: &ir::ClassInterface) -> usize {

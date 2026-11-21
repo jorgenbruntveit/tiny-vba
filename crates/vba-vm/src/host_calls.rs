@@ -107,7 +107,9 @@ impl Session {
         )
     }
     pub fn discard_queued_host_callbacks(&mut self) {
-        self.callbacks.clear();
+        while let Some(callback) = self.callbacks.pop_front() {
+            self.release_callback_references(&callback);
+        }
     }
     pub fn suspended_depth(&self) -> usize {
         self.suspended_invocations.len()

@@ -11,7 +11,7 @@ syntax, capabilities and host operations must fail explicitly.
 | Values/runtime | Exact scalar tags, checked arithmetic/coercion, UTF-16 strings, array bounds, ByRef locations, persistent state, handlers and errors | [Runtime](runtime.md), [language profile](m4-language.md) |
 | Intrinsics | Portable functions plus explicitly injected environment/locale services | [Inventory](vba-intrinsic-functions.md); missing services refuse, no ambient IO |
 | Host calls | Native protocol 1.1, explicit roots/site permissions, typed patches, waits and callbacks | [Host integration](host-integration.md); document effects do not roll back on failure |
-| Classes/events | Project-local instances, properties/defaults, interfaces, WithEvents, lazy As New scalars/array elements | [Runtime](runtime.md), [decisions](decisions/README.md); no arbitrary external activation |
+| Classes/events | Project-local instances, properties/defaults, interfaces, WithEvents, lazy As New scalars/array elements, last-reference termination | [Runtime](runtime.md), [decisions](decisions/README.md); no arbitrary external activation |
 | Native forms | `native-forms-common-v1`, inert native import, common runtime/designer and native Save/Export | [Forms](forms.md); finite controls/members/input combinations |
 | Worksheet controls | GridCraft `worksheet-form-controls-v1` | Fork-owned identity, engine and persistence; separate from worksheet ActiveX |
 | Project/packages | Bounded MS-OVBA decode, original-byte preservation and explicit source-only edited-copy export | [Project import](project-import.md), [forms](forms.md); protected/unsupported inputs refuse |

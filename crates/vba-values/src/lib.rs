@@ -1,13 +1,16 @@
 //! Typed scalar/array values and bounded canonical writable locations.
 #![forbid(unsafe_code)]
 mod nominal;
+mod object_references;
 pub use nominal::NominalType;
+pub use object_references::ObjectReferences;
 /// Version of this native Rust public contract.
 pub const API_VERSION: u32 = 1;
 
+use std::collections::BTreeMap;
 use vba_diagnostics::Diagnostic;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ObjectRef {
     pub host: u64,
     pub object: u64,
@@ -222,7 +225,10 @@ pub struct Locations {
     capacity: usize,
     slots: Vec<Option<Value>>,
     generations: Vec<u64>,
+    object_references: ObjectReferences,
+    object_owners: BTreeMap<usize, ObjectRef>,
 }
+
 impl Locations {
     /// Slots a store created with [`Locations::new`] can allocate.
     pub const DEFAULT_CAPACITY: usize = 4096;
@@ -236,8 +242,37 @@ impl Locations {
             capacity,
             slots: Vec::new(),
             generations: Vec::new(),
+            object_references: ObjectReferences::default(),
+            object_owners: BTreeMap::new(),
         }
     }
+    pub fn object_references(&mut self) -> &mut ObjectReferences {
+        &mut self.object_references
+    }
+
+    /// Associate a class field with the object that owns its storage.
+    pub fn set_object_owner(
+        &mut self,
+        location: Location,
+        object: ObjectRef,
+    ) -> Result<(), Diagnostic> {
+        self.read(location)?;
+        if location.element.is_some() {
+            return Err(stale());
+        }
+        self.object_owners.insert(location.slot, object);
+        Ok(())
+    }
+
+    /// Find the owner of an alias for lifetime accounting, even if an array
+    /// replacement has made the element alias stale for reads and writes.
+    pub fn object_owner(&self, location: Location) -> Option<ObjectRef> {
+        if location.owner != self.owner {
+            return None;
+        }
+        self.object_owners.get(&location.slot).copied()
+    }
+
     pub fn allocate(&mut self, value: Value) -> Result<Location, Diagnostic> {
         value.validate()?;
         if self.slots.len() >= self.capacity {
@@ -248,6 +283,7 @@ impl Locations {
             slot: self.slots.len(),
             element: None,
         };
+        self.object_references.retain_value(&value);
         self.slots.push(Some(value));
         self.generations.push(0);
         Ok(location)
@@ -311,21 +347,27 @@ impl Locations {
     pub fn write(&mut self, location: Location, value: Value) -> Result<(), Diagnostic> {
         self.read(location)?;
         value.validate()?;
-        if let Some((_, index)) = location.element {
+        let slot = self
+            .slots
+            .get_mut(location.slot)
+            .and_then(Option::as_mut)
+            .ok_or_else(stale)?;
+        let (current, old) = if let Some((_, index)) = location.element {
             if matches!(value, Value::Array(_)) {
                 return Err(Diagnostic::new("VBA_ARRAY_13", "Nested arrays unsupported"));
             }
-            let Some(Value::Array(array)) =
-                self.slots.get_mut(location.slot).and_then(Option::as_mut)
-            else {
+            let Value::Array(array) = slot else {
                 return Err(stale());
             };
-            array.set(index, value)?;
+            array.replace(index, value)?
         } else {
             let generation = self.generations.get_mut(location.slot).ok_or_else(stale)?;
             *generation = generation.checked_add(1).ok_or_else(stale)?;
-            *self.slots.get_mut(location.slot).ok_or_else(stale)? = Some(value);
-        }
+            let old = std::mem::replace(slot, value);
+            (&*slot, old)
+        };
+        self.object_references.retain_value(current);
+        self.object_references.release_value(&old);
         Ok(())
     }
 
@@ -335,7 +377,9 @@ impl Locations {
             return Err(stale());
         }
         let slot = self.slots.get_mut(location.slot).ok_or_else(stale)?;
-        *slot = None;
+        let value = slot.take().ok_or_else(stale)?;
+        self.object_references.release_value(&value);
+        self.object_owners.remove(&location.slot);
         Ok(())
     }
 }
@@ -2855,6 +2899,10 @@ impl VbaArray {
         }
     }
     pub fn set(&mut self, index: usize, value: Value) -> Result<(), Diagnostic> {
+        self.replace(index, value).map(drop)
+    }
+
+    fn replace(&mut self, index: usize, value: Value) -> Result<(&Value, Value), Diagnostic> {
         value.validate()?;
         if matches!(value, Value::Array(_)) {
             return Err(Diagnostic::unsupported("nested arrays"));
@@ -2865,14 +2913,14 @@ impl VbaArray {
                 "Array element type mismatch",
             ));
         }
-        let old = self.elements.get(index).ok_or_else(stale)?;
-        let bytes = self.payload - old.payload_bytes() + value.payload_bytes();
+        let element = self.elements.get_mut(index).ok_or_else(stale)?;
+        let bytes = self.payload - element.payload_bytes() + value.payload_bytes();
         if bytes > 8 * 1024 * 1024 {
             return Err(Diagnostic::new("VBA0003", "array payload budget exceeded"));
         }
         self.payload = bytes;
-        *self.elements.get_mut(index).ok_or_else(stale)? = value;
-        Ok(())
+        let old = std::mem::replace(element, value);
+        Ok((element, old))
     }
     pub fn kind(&self) -> ScalarKind {
         self.kind

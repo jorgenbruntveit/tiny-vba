@@ -130,3 +130,4 @@ and evidence references.
 - [0104 — Frame aliases for embedding-generated code](0104-generated-code-frame-aliases.md)
 - [0105 — Host permissions bounded by the program](0105-program-bounded-host-permissions.md)
 - [0106 — Location store sized by `Limits::locations`](0106-location-store-sized-by-limits.md)
+- [0107 — Incremental project instance lifetime](0107-incremental-project-instance-lifetime.md)

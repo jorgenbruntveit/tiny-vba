@@ -257,8 +257,14 @@ VM frames and canonical fields. Lazy As New scalar and array-element reads can
 construct through normal checkpoints; declarations, Set targets, whole-array
 inspection and safe debugger queries remain inert. Failed initialization retains
 retry/Stop behavior. Class enumerators use bounded snapshot lifetimes and retain
-active/parked receivers as roots. No external activation or second object store
-is added.
+active/parked receivers as roots. Project instances use incremental strong
+reference counts over canonical locations, object-bearing arrays and execution
+state. A ByRef field alias also retains the instance that owns its storage. The VM
+runs Class_Terminate at ordinary statement boundaries and top-level completion
+after the last reference is released, then releases the instance's fields. Strong reference
+cycles remain live until their links are broken or the project state is torn
+down. Reset, cancellation and abnormal teardown do not run lifecycle code.
+No external activation or second object store is added. See [ADR 0107](decisions/0107-incremental-project-instance-lifetime.md).
 
 [Compiler version contracts](compiler.md#versioned-extensions) map IR 7–14 to the
 owning decisions. [Forms](forms.md) describes instance/window lifetime, input
