@@ -175,7 +175,7 @@ Private Sub VbaFormKey(ByVal phase As Integer,ByVal key As MSForms.ReturnInteger
                     "ByVal key As MSForms.ReturnInteger,ByVal shift As Integer"
                 };
                 s.push_str(&format!(
-                    "Private Sub Vba{}_{event}({params})\n{handler} {args}\nEnd Sub\n",
+                    "Private Sub Vba_{}_{event}({params})\n{handler} {args}\nEnd Sub\n",
                     control.name
                 ));
             }
