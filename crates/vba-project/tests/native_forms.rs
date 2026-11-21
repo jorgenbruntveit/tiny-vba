@@ -546,7 +546,9 @@ fn native_frame_storage_claims_flags_and_missing_resources_refuse_atomically() {
                     .read_to_end(&mut raw)
                     .unwrap();
                 let name = raw.windows(6).position(|w| w == b"Frame1").unwrap();
-                raw[name - 12..name - 8].copy_from_slice(&0x40003u32.to_le_bytes());
+                // A container site must be fPromoteControls (0x40000); Office
+                // writes 0x40003 and 0x40023, so drop that bit instead.
+                raw[name - 12..name - 8].copy_from_slice(&0x2003u32.to_le_bytes());
                 file.create_stream("/f").unwrap().write_all(&raw).unwrap();
             }
         }
