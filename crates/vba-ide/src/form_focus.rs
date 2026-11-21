@@ -278,7 +278,7 @@ End Sub
             let handler = format!("{}_{event}", control.name);
             if handlers.contains(&handler.to_ascii_lowercase()) {
                 source.push_str(&format!(
-                    "Private Sub Vba{}_{event}({})\n{handler}{}\nEnd Sub\n",
+                    "Private Sub Vba_{}_{event}({})\n{handler}{}\nEnd Sub\n",
                     control.name,
                     if cancel {
                         "ByVal cancel As MSForms.ReturnBoolean"
@@ -297,7 +297,7 @@ End Sub
         )
     }) {
         source.push_str(&format!(
-            "Private Sub Vba{0}_VbaFocusRequested(ByVal target As Object)\nVbaMoveFocus target\ntarget.VbaFocusConfirmed=True\nEnd Sub\n",
+            "Private Sub Vba_{0}_VbaFocusRequested(ByVal target As Object)\nVbaMoveFocus target\ntarget.VbaFocusConfirmed=True\nEnd Sub\n",
             control.name
         ));
     }

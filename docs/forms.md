@@ -48,7 +48,10 @@ The shared designer supports form/control caption, text, geometry,
 enabled/visible state and eligible tab order. Toolbox addition/removal covers
 Label, TextBox and CommandButton. Imported controls retain native identities and
 resources. Designer state and authored source survive VM Reset; generated support
-code is kept separate from saved authored source.
+code is kept separate from saved authored source. Generated members begin with
+`Vba`, so control names and form procedures that begin with `Vba` are refused.
+Each control's generated field is `Vba_<Name>`, which no other generated member
+uses, so a control may take any other name, such as `Enter` or `MouseDown`.
 
 Controls stay in native painting preorder: a container precedes its contents and
 each container's contents stay together. Bring to Front and Send to Back reorder

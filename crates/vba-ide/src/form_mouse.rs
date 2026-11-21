@@ -220,7 +220,7 @@ Private Sub VbaRootMouse(ByVal phase As Integer,ByVal button As Integer,ByVal sh
             if handlers.contains(&handler.to_ascii_lowercase()) {
                 let prefix = if indexed(c.kind) { "Index," } else { "" };
                 s.push_str(&format!(
-                    "Private Sub Vba{}_{event}({})\n{handler} {prefix}{args}\nEnd Sub\n",
+                    "Private Sub Vba_{}_{event}({})\n{handler} {prefix}{args}\nEnd Sub\n",
                     c.name,
                     parameters(event, indexed(c.kind))
                 ));

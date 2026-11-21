@@ -860,13 +860,13 @@ fn compiled_form(
     source.push_str(&format!("Private VbaDisplayOwner As {}\n", form.name));
     for c in &form.controls {
         source.push_str(&format!(
-            "Public WithEvents Vba{} As {}\n",
+            "Public WithEvents Vba_{} As {}\n",
             c.name,
             class_name(c.kind)
         ));
     }
     for c in form.controls.iter().filter(|c| c.kind != ControlKind::Page) {
-        source.push_str(&format!("Public Property Get {0}() As {1}\nIf Not VbaLoaded Then Class_Initialize\nSet {0}=Vba{0}\nEnd Property\n",c.name,class_name(c.kind)));
+        source.push_str(&format!("Public Property Get {0}() As {1}\nIf Not VbaLoaded Then Class_Initialize\nSet {0}=Vba_{0}\nEnd Property\n",c.name,class_name(c.kind)));
     }
     let containers = native.is_some()
         || form.controls.iter().any(|c| {
@@ -1043,7 +1043,7 @@ fn compiled_form(
                         parent
                     };
                     let owner = parent
-                        .map(|p| format!("Vba{}.Font", p.name))
+                        .map(|p| format!("Vba_{}.Font", p.name))
                         .unwrap_or_else(|| "VbaFont".into());
                     source.push_str(&format!("VbaCopyFont {temp}.VbaFont,{owner}\n"));
                 }
@@ -1070,7 +1070,7 @@ fn compiled_form(
             ));
         }
         source.push_str(&format!(
-            "Set Vba{}={temp}\nVbaAllControls.VbaAdd {temp}\n",
+            "Set Vba_{}={temp}\nVbaAllControls.VbaAdd {temp}\n",
             c.name
         ));
         if native.is_some() && matches!(c.kind, ControlKind::Frame | ControlKind::Page) {
@@ -1087,7 +1087,7 @@ fn compiled_form(
             } else {
                 "Controls"
             };
-            source.push_str(&format!("Vba{}.{collection}.VbaAdd {temp}\n", owner.name));
+            source.push_str(&format!("Vba_{}.{collection}.VbaAdd {temp}\n", owner.name));
         } else if containers {
             source.push_str(&format!("VbaControls.VbaAdd {temp}\n"));
         }
@@ -1182,7 +1182,7 @@ fn compiled_form(
     for c in &form.controls {
         if let Some(tabs) = current.get(&c.id) {
             source.push_str(&format!(
-                "Vba{}.VbaInitializeSelection {}\n",
+                "Vba_{}.VbaInitializeSelection {}\n",
                 c.name, tabs.selected
             ));
         }
@@ -1198,14 +1198,14 @@ fn compiled_form(
             };
             if !control.row_source.is_empty() {
                 source.push_str(&format!(
-                    "Vba{}.RowSource={}\n",
+                    "Vba_{}.RowSource={}\n",
                     c.name,
                     vba_string(&control.row_source)
                 ));
             }
             if !control.control_source.is_empty() {
                 source.push_str(&format!(
-                    "Vba{}.ControlSource={}\n",
+                    "Vba_{}.ControlSource={}\n",
                     c.name,
                     vba_string(&control.control_source)
                 ));
@@ -1248,7 +1248,7 @@ fn compiled_form(
         source.push_str("Set VbaActiveControl=Nothing\n");
     }
     for c in &form.controls {
-        source.push_str(&format!("Set Vba{}=Nothing\n", c.name));
+        source.push_str(&format!("Set Vba_{}=Nothing\n", c.name));
     }
     source.push_str("Set VbaControls=Nothing\nSet VbaAllControls=Nothing\n");
     // Unload drops the displayed state and its default reference, not aliased code state.
@@ -1263,14 +1263,14 @@ fn compiled_form(
     source.push_str("If key>0 Then\n");
     for c in &form.controls {
         source.push_str(&format!(
-            "If key={} Then\nSet VbaLookup=Vba{}\nExit Function\nEnd If\n",
+            "If key={} Then\nSet VbaLookup=Vba_{}\nExit Function\nEnd If\n",
             c.id, c.name
         ));
     }
     source.push_str("End If\n");
     for c in &form.controls {
         if c.kind == ControlKind::MultiPage {
-            source.push_str(&format!("Dim page{0} As Object\nSet page{0}=Vba{1}.VbaFindPage(key)\nIf Not (page{0} Is Nothing) Then\nSet VbaLookup=page{0}\nExit Function\nEnd If\n", c.id, c.name));
+            source.push_str(&format!("Dim page{0} As Object\nSet page{0}=Vba_{1}.VbaFindPage(key)\nIf Not (page{0} Is Nothing) Then\nSet VbaLookup=page{0}\nExit Function\nEnd If\n", c.id, c.name));
         }
     }
     if native.is_some() {
@@ -1279,12 +1279,12 @@ fn compiled_form(
     }
     source.push_str("Err.Raise 91\nEnd Function\n");
     for control in &form.controls {
-        source.push_str(&format!("Private Sub Vba{}_VbaParentRequested(ByVal child As Object,ByRef owner As Object)\nIf child.VbaParentKey=0 Then\nSet owner=Me\nElse\nSet owner=VbaLookup(child.VbaParentKey)\nEnd If\nEnd Sub\n",control.name));
+        source.push_str(&format!("Private Sub Vba_{}_VbaParentRequested(ByVal child As Object,ByRef owner As Object)\nIf child.VbaParentKey=0 Then\nSet owner=Me\nElse\nSet owner=VbaLookup(child.VbaParentKey)\nEnd If\nEnd Sub\n",control.name));
     }
     for c in &form.controls {
         if c.kind == ControlKind::MultiPage {
             source.push_str(&format!(
-                "Private Sub Vba{}_VbaStructureChanged()\nVbaReorderTabs\nEnd Sub\n",
+                "Private Sub Vba_{}_VbaStructureChanged()\nVbaReorderTabs\nEnd Sub\n",
                 c.name
             ));
         }
@@ -1304,7 +1304,7 @@ fn compiled_form(
                     ("", "")
                 };
                 source.push_str(&format!(
-                    "Private Sub Vba{}_{}({parameters})\n{handler}{arguments}\nEnd Sub\n",
+                    "Private Sub Vba_{}_{}({parameters})\n{handler}{arguments}\nEnd Sub\n",
                     c.name, event
                 ));
             }
@@ -1326,21 +1326,21 @@ fn compiled_form(
                     ("", "")
                 };
                 source.push_str(&format!(
-                    "Private Sub Vba{}_{event}({params})\n{handler}{args}\nEnd Sub\n",
+                    "Private Sub Vba_{}_{event}({params})\n{handler}{args}\nEnd Sub\n",
                     c.name
                 ));
             }
         }
-        source.push_str(&format!("Private Sub Vba{0}_VbaTabChanged(ByVal previous As Integer,ByVal requested As Integer)\nVbaTabChange Vba{0},previous,requested\nEnd Sub\n",c.name));
+        source.push_str(&format!("Private Sub Vba_{0}_VbaTabChanged(ByVal previous As Integer,ByVal requested As Integer)\nVbaTabChange Vba_{0},previous,requested\nEnd Sub\n",c.name));
         if c.kind == ControlKind::OptionButton {
             source.push_str(&format!(
-                "Private Sub Vba{0}_VbaSelected()\nVbaOptionSelected Vba{0}\nEnd Sub\n",
+                "Private Sub Vba_{0}_VbaSelected()\nVbaOptionSelected Vba_{0}\nEnd Sub\n",
                 c.name
             ));
         }
         if c.kind == ControlKind::CommandButton {
             for (role, property) in ["Default", "Cancel"].iter().enumerate() {
-                source.push_str(&format!("Private Sub Vba{0}_Vba{property}Changed(ByVal value As Boolean)\nVbaRoleChange Vba{0},{role}\nEnd Sub\n",c.name));
+                source.push_str(&format!("Private Sub Vba_{0}_Vba{property}Changed(ByVal value As Boolean)\nVbaRoleChange Vba_{0},{role}\nEnd Sub\n",c.name));
             }
         }
     }
@@ -2454,6 +2454,22 @@ impl Ide {
             "name" if control.is_some() => "VbaName",
             _ => field,
         };
+        // A control's generated field is `Vba_<Name>`. The earlier spelling
+        // `Vba<Name>` still reads it when no generated form member has that name.
+        if control.is_none()
+            && let Some(name) = key.strip_prefix("vba")
+            && !name.starts_with('_')
+            && designer
+                .form()
+                .controls
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case(name))
+            && let Err(missing) = session.read_instance_field(object, field)
+        {
+            return session
+                .read_instance_field(object, &format!("Vba_{name}"))
+                .map_err(|_| missing);
+        }
         session.read_instance_field(object, field)
     }
     /// Inert canonical window state; does not load forms or execute callbacks.
