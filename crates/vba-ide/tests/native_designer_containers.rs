@@ -392,16 +392,6 @@ fn an_id_once_saved_is_never_given_to_a_new_control() -> R {
 }
 
 #[test]
-fn deleting_a_single_page_is_refused_until_the_tab_list_can_follow() -> R {
-    let (mut ide, id) = import(fixture::multipage_companion(0))?;
-    select(&mut ide, id, 32)?;
-    ide.edit_form(id, DesignEdit::Delete)?;
-    let error = ide.export_native_form(id).err().ok_or("refused")?;
-    assert!(error.message.contains("MultiPage page"), "{error:?}");
-    Ok(())
-}
-
-#[test]
 fn tab_order_cannot_reorder_multipage_pages() -> R {
     let (mut ide, id) = import(fixture::multipage_companion(0))?;
     let mut order = ide.form(id).ok_or("form")?.form().tab_order.clone();

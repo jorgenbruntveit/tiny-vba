@@ -58,8 +58,7 @@ pub(super) fn reconcile(
             .iter()
             .find(|c| c.id == id && c.parent.is_none() && c.kind == Kind::Page)
             .ok_or_else(|| corrupt("MultiPage page ID/storage mismatch"))?;
-        if page.name != tab.name
-            || (!page.caption.is_empty() && page.caption != tab.caption)
+        if (!page.caption.is_empty() && page.caption != tab.caption)
             || (!page.tag.is_empty() && page.tag != tab.tag)
             || (!page.control_tip_text.is_empty() && page.control_tip_text != tab.tooltip)
         {

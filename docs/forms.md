@@ -51,7 +51,11 @@ keeps its tab position, and Save/Export refuses a tab order that reorders Pages.
 Deleting a container deletes its contents. New controls take IDs above every ID
 the native form stores, including a MultiPage's internal TabStrip. A new control
 may be placed in a container; moving an imported control to another container is
-refused on Save/Export.
+refused on Save/Export. A Page's caption, tag, tooltip and state persist in its
+MultiPage's internal TabStrip, so editing them or deleting a Page rewrites that
+TabStrip and the MultiPage's page list; the selected tab follows its page.
+Office gives the internal tabs their own names (Tab1, ...), which a Page rename
+leaves unchanged. Adding Pages is refused.
 
 ## Native Save and Export
 

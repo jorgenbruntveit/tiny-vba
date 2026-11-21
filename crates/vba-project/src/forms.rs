@@ -9,7 +9,7 @@ use crate::{Attribute, Limits, Metered, Result, budget, container_error, read_st
 pub use binary::new_designer_control;
 pub use encode::{
     encode_embedded, encode_embedded_designed, encode_export, encode_export_designed,
-    encode_export_named, next_control_id,
+    encode_export_named, next_control_id, sync_multipage_tabs,
 };
 pub use fonts::Font;
 pub use frame::{companion_name, decode_export};
