@@ -884,6 +884,9 @@ fn compiled_form(
     ));
     for property in ["Width", "Height"] {
         source.push_str(&format!("Public Vba{property} As Single\nPublic Property Get {property}() As Single\nIf Not VbaLoaded Then Class_Initialize\n{property}=Vba{property}\nEnd Property\nPublic Property Let {property}(ByVal value As Single)\nIf Not VbaLoaded Then Class_Initialize\nIf value<0 Or value>32767 Then Err.Raise 380\nVba{property}=value\nEnd Property\n"));
+        // Width/Height already describe the client region (ClientWidth/ClientHeight),
+        // and forms have no scroll bars, so the read-only inside size is the same.
+        source.push_str(&format!("Public Property Get Inside{property}() As Single\nIf Not VbaLoaded Then Class_Initialize\nInside{property}=Vba{property}\nEnd Property\n"));
     }
     if native.is_some() {
         source.push_str("Public VbaTag As String\nPublic Property Get Tag() As String\nIf Not VbaLoaded Then Class_Initialize\nTag=VbaTag\nEnd Property\nPublic Property Let Tag(ByVal value As String)\nIf Not VbaLoaded Then Class_Initialize\nVbaTag=value\nEnd Property\nPublic VbaHelpContextID As Long\nPublic Property Get HelpContextID() As Long\nIf Not VbaLoaded Then Class_Initialize\nHelpContextID=VbaHelpContextID\nEnd Property\nPublic Property Let HelpContextID(ByVal value As Long)\nIf value<0 Then Err.Raise 380\nIf Not VbaLoaded Then Class_Initialize\nVbaHelpContextID=value\nEnd Property\n");

@@ -4,12 +4,12 @@
   "date": "2026-11-20",
   "local_status": "NOT_RUN",
   "office_observations": "NOT_RUN",
-  "selection_sha256": "49d58fe9acd56bc2b54608307c3d04ac9ecac714968c58dbb3e97871c1a32f70",
-  "runtime_tree_sha256": "ef319f1bc4196546ec25ee6f07f032b5fa4abe884271e39ddabd0b151c4aeca8",
+  "selection_sha256": "8b61654eacb980a4f4f422e5d822cf0a012207cfc410ca07528574693e611973",
+  "runtime_tree_sha256": "48baba508f8e19cd7f4dc0962b7df0be93e4c734fd9b1bf864bfca08bc1dce3b",
   "evidence_basis": [
     "authored-contract",
     "inherited-mac-oracle"
   ],
   "gates": [],
-  "notes": "Limit-sized location store candidate. Historical full local/host receipts are archived under baseline-2026-11-08 and do not certify this changed tree. Fresh checks are recorded separately; remote platform results require GitHub Actions."
+  "notes": "UserForm inside size candidate. Historical full local/host receipts are archived under baseline-2026-11-08 and do not certify this changed tree. Fresh checks are recorded separately; remote platform results require GitHub Actions."
 }

@@ -32,7 +32,7 @@ Declarations such as `As MSForms.CheckBox` do not depend on the support class.
 
 | Area | Supported contract |
 |---|---|
-| Properties | Applicable Name/Caption, geometry, Enabled/Visible, TabStop/TabIndex, Tag and ControlTipText |
+| Properties | Applicable Name/Caption, geometry, Enabled/Visible, TabStop/TabIndex, Tag and ControlTipText; read-only UserForm InsideWidth/InsideHeight, equal to the client Width/Height because forms have no scroll bars |
 | Text | UTF-16 Text/Value and selection, MaxLength, Locked, multiline/password input, HideSelection, AutoTab, SelectionMargin and bounded TextBox viewports |
 | Buttons | Click, Default/Cancel, TakeFocusOnClick; applicable Boolean Value/Null/TripleState and scoped OptionButton groups |
 | Lists | Bounded row mutation, indexed List/Column load/readback, selection, ComboBox styles/matching/drop state |
