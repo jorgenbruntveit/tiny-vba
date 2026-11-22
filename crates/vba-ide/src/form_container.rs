@@ -168,16 +168,35 @@ VbaScopeOrder control.VbaId,position
 Next i
 Exit Sub
 End If
-For i=0 To children.VbaTotal-1
-For scan=0 To children.VbaTotal-1
+Dim total As Long,slot As Long,placed As Long
+total=children.VbaTotal
+If total=0 Then Exit Sub
+Dim starts() As Long,order() As Long
+ReDim starts(total)
+ReDim order(total-1)
+For scan=0 To total-1
 Set control=entries(scan)
-If control.VbaTabIndex=i Then
+slot=control.VbaTabIndex
+If slot>=0 And slot<total Then starts(slot+1)=starts(slot+1)+1
+Next scan
+For i=1 To total
+starts(i)=starts(i)+starts(i-1)
+Next i
+For scan=0 To total-1
+Set control=entries(scan)
+slot=control.VbaTabIndex
+If slot>=0 And slot<total Then
+order(starts(slot))=scan
+starts(slot)=starts(slot)+1
+placed=placed+1
+End If
+Next scan
+For i=0 To placed-1
+Set control=entries(order(i))
 control.VbaNavigationRank=position
 position=position+1
 kind=control.VbaKind
 If kind=11 Or kind=13 Or kind=14 Then VbaScopeOrder control.VbaId,position
-End If
-Next scan
 Next i
 End Sub
 Private Sub VbaTabChange(ByVal origin As Object,ByVal previous As Integer,ByVal requested As Integer)
