@@ -447,6 +447,7 @@ impl Ide {
     /// The configuration is copied into each session and cannot change a running one.
     pub fn configure_execution_limits(&mut self, limits: Limits) -> Result<()> {
         let positive = limits.instructions > 0
+            && limits.instance_work > 0
             && limits.slice > 0
             && limits.depth > 0
             && limits.locations > 0
@@ -456,6 +457,7 @@ impl Ide {
             && limits.payload > 0
             && limits.callbacks > 0;
         let bounded = limits.instructions <= 1_000_000_000
+            && limits.instance_work <= 1_000_000_000
             && limits.slice <= 1_000_000
             && limits.depth <= 4096
             && limits.locations <= 1_000_000

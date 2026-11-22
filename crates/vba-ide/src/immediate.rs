@@ -125,6 +125,7 @@ impl Ide {
             binding,
             Limits {
                 instructions: 10_000,
+                instance_work: 10_000,
                 depth: 32,
                 locations: 1024,
                 stack_entries: 4096,

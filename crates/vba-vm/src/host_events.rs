@@ -66,7 +66,7 @@ impl Session {
                 if work
                     > self
                         .limits
-                        .instructions
+                        .instance_work
                         .saturating_sub(self.counters.instance_work)
                 {
                     return Err(resource());
@@ -79,7 +79,7 @@ impl Session {
                 if work
                     > self
                         .limits
-                        .instructions
+                        .instance_work
                         .saturating_sub(self.counters.instance_work)
                 {
                     return Err(resource());
@@ -108,7 +108,7 @@ impl Session {
                     if work
                         > self
                             .limits
-                            .instructions
+                            .instance_work
                             .saturating_sub(self.counters.instance_work)
                     {
                         return Err(resource());

@@ -29,6 +29,8 @@ pub fn capabilities() -> ir::Capabilities {
 #[derive(Clone, Debug)]
 pub struct Limits {
     pub instructions: u64,
+    /// Instance bookkeeping: reachability sweeps, event sink scans and project lookups.
+    pub instance_work: u64,
     pub slice: u32,
     pub depth: usize,
     pub locations: usize,
@@ -42,6 +44,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             instructions: 1_000_000,
+            instance_work: 10_000_000,
             slice: 4096,
             depth: 128,
             locations: 65536,
@@ -4107,7 +4110,7 @@ impl Session {
         };
         let view_limit = self
             .limits
-            .instructions
+            .instance_work
             .saturating_sub(self.counters.instance_work);
         let view_work = Cell::new(0u64);
         let view_payload = Cell::new(0usize);
@@ -4159,7 +4162,7 @@ impl Session {
             .instance_work
             .checked_add(view_work.get())
             .ok_or_else(resource)?;
-        if self.counters.instance_work > self.limits.instructions {
+        if self.counters.instance_work > self.limits.instance_work {
             return Err(resource());
         }
         self.accept_host(outcome)

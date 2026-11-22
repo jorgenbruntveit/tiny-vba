@@ -128,7 +128,7 @@ impl Session {
             if work
                 > self
                     .limits
-                    .instructions
+                    .instance_work
                     .saturating_sub(self.counters.instance_work)
             {
                 return Err(resource());
@@ -145,7 +145,7 @@ impl Session {
                 if work
                     > self
                         .limits
-                        .instructions
+                        .instance_work
                         .saturating_sub(self.counters.instance_work)
                 {
                     return Err(resource());
@@ -188,7 +188,7 @@ impl Session {
                 if work
                     > self
                         .limits
-                        .instructions
+                        .instance_work
                         .saturating_sub(self.counters.instance_work)
                 {
                     return Err(resource());
@@ -240,7 +240,7 @@ impl Session {
             .instance_work
             .checked_add(work)
             .ok_or_else(resource)?;
-        if self.counters.instance_work > self.limits.instructions {
+        if self.counters.instance_work > self.limits.instance_work {
             return Err(resource());
         }
         // Capture the connection list once; handlers execute synchronously as ordinary frames.
@@ -1106,7 +1106,7 @@ impl Session {
             .instance_work
             .checked_add(u64::try_from(work).map_err(|_| resource())?)
             .ok_or_else(resource)?;
-        if self.counters.instance_work > self.limits.instructions {
+        if self.counters.instance_work > self.limits.instance_work {
             return Err(resource());
         }
         Ok(())
@@ -1228,7 +1228,7 @@ impl Session {
                 .instance_work
                 .checked_add(work)
                 .ok_or_else(resource)?;
-            if self.counters.instance_work > self.limits.instructions {
+            if self.counters.instance_work > self.limits.instance_work {
                 return Err(resource());
             }
             let candidate = self
