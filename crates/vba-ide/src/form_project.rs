@@ -882,8 +882,27 @@ fn compiled_form(
         "Public Property Get Name() As String\nName={}\nEnd Property\n",
         quoted(&form.name)
     ));
-    for property in ["Width", "Height"] {
+    for (property, inside) in [("Width", "InsideWidth"), ("Height", "InsideHeight")] {
         source.push_str(&format!("Public Vba{property} As Single\nPublic Property Get {property}() As Single\nIf Not VbaLoaded Then Class_Initialize\n{property}=Vba{property}\nEnd Property\nPublic Property Let {property}(ByVal value As Single)\nIf Not VbaLoaded Then Class_Initialize\nIf value<0 Or value>32767 Then Err.Raise 380\nVba{property}=value\nEnd Property\n"));
+        let name_is_used = form.controls.iter().any(|control| {
+            control.kind != ControlKind::Page && control.name.eq_ignore_ascii_case(inside)
+        }) || parsed
+            .module
+            .procedures
+            .iter()
+            .map(|procedure| &procedure.name)
+            .chain(
+                parsed
+                    .module
+                    .declarations
+                    .iter()
+                    .map(|declaration| &declaration.name),
+            )
+            .any(|name| name.spelling.eq_ignore_ascii_case(inside));
+        if !name_is_used {
+            // Width and Height already describe the client region.
+            source.push_str(&format!("Public Property Get {inside}() As Single\nIf Not VbaLoaded Then Class_Initialize\n{inside}=Vba{property}\nEnd Property\n"));
+        }
     }
     if native.is_some() {
         source.push_str("Public VbaTag As String\nPublic Property Get Tag() As String\nIf Not VbaLoaded Then Class_Initialize\nTag=VbaTag\nEnd Property\nPublic Property Let Tag(ByVal value As String)\nIf Not VbaLoaded Then Class_Initialize\nVbaTag=value\nEnd Property\nPublic VbaHelpContextID As Long\nPublic Property Get HelpContextID() As Long\nIf Not VbaLoaded Then Class_Initialize\nHelpContextID=VbaHelpContextID\nEnd Property\nPublic Property Let HelpContextID(ByVal value As Long)\nIf value<0 Then Err.Raise 380\nIf Not VbaLoaded Then Class_Initialize\nVbaHelpContextID=value\nEnd Property\n");

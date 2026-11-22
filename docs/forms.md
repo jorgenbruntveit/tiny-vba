@@ -32,7 +32,7 @@ Declarations such as `As MSForms.CheckBox` do not depend on the support class.
 
 | Area | Supported contract |
 |---|---|
-| Properties | Applicable Name/Caption, geometry, Enabled/Visible, TabStop/TabIndex, Tag and ControlTipText |
+| Properties | Applicable Name/Caption, geometry, Enabled/Visible, TabStop/TabIndex, Tag and ControlTipText, read-only UserForm InsideWidth/InsideHeight |
 | Text | UTF-16 Text/Value and selection, MaxLength, Locked, multiline/password input, HideSelection, AutoTab, SelectionMargin and bounded TextBox viewports |
 | Buttons | Click, Default/Cancel, TakeFocusOnClick; applicable Boolean Value/Null/TripleState and scoped OptionButton groups |
 | Lists | Bounded row mutation, indexed List/Column load/readback, selection, ComboBox styles/matching/drop state |
@@ -40,6 +40,10 @@ Declarations such as `As MSForms.CheckBox` do not depend on the support class.
 | Events/input | Common focus/validation cancellation, key/mouse callbacks, Tab/Space/Enter/Escape and selected accelerators |
 | Appearance | Applicable OLE colors, typed Font identity/attributes, borders/effects, alignment and wrapping within fixed authored bounds |
 | Binding | Explicit-capability single-cell ControlSource and contiguous RowSource links; the host owns real range access |
+
+InsideWidth and InsideHeight return the same client dimensions as Width and
+Height in the current UserForm model. An existing control accessor or authored
+form member takes precedence if it already uses either name.
 
 Generated navigation ranks group siblings by their TabIndex in a linear pass
 per container. Controls with equal indices follow collection order. Navigation
